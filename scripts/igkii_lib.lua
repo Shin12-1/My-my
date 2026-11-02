@@ -8,6 +8,7 @@
 --     Fly, Hide Username, Anti AFK and Instant Prompts (all undone on Destroy)
 --   Library:SaveConfig(name) / :LoadConfig(name) store every element that has a Flag
 --   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
+-- The window opens by itself after the script finishes adding tabs (Window:PlayIntro()).
 -- Re-running a script that loads this library closes the previous window first, unless
 -- getgenv().IGKII_ALLOW_MULTI = true.
 -- Accessibility: Library:SetReducedMotion(true) or Library:SetMotionScale(0..1)
@@ -2779,6 +2780,14 @@ function Library.Window(opts)
 
     self._introDone = false
     root.Visible = false
+    -- The window stays hidden until PlayIntro runs. Scripts used to have to call it
+    -- by hand; it now runs by itself once the script has finished adding its tabs
+    -- (PlayIntro only ever plays once, so a manual call is still harmless).
+    task.defer(function()
+        if not self._destroyed then
+            self:PlayIntro()
+        end
+    end)
     return self
 end
 
