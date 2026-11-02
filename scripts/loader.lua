@@ -5,7 +5,7 @@ end
 
 local env = (getgenv and getgenv()) or _G
 local BASE = "https://igkii.kiantejero.workers.dev"
-local TOKEN = tostring(env.IGKII_TOKEN or "") -- Absolute fallback to empty string
+local TOKEN = tostring(env.IGKII_TOKEN or "") -- Force string conversion to prevent nil crash
 
 local routes = {
     [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },
@@ -15,7 +15,7 @@ local routes = {
 local http = request or http_request
 
 local function get(url)
-    -- CACHE BUSTER: Forces a fresh download every time
+    -- Cache buster
     local separator = url:find("%?") and "&" or "?"
     url = url .. separator .. "t=" .. tostring(os.time()) .. math.random(1000, 9999)
 
