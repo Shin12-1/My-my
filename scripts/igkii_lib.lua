@@ -4,9 +4,11 @@
 -- Returns the Library table: Library.Window({...}) -> window
 --   window:Tab / :BuildHome / :BuildMisc / :Notify / :Confirm / :OnDestroy / :Destroy
 --   tab:Groupbox -> :Toggle :Slider :Input :Dropdown :Keybind :Button :Status :Label :Section
---   window:BuildMisc() adds a ready-made Misc tab: God Mode, Speed, Infinite Jump, No Clip,
---     Fly, Hide Username, Anti AFK and Instant Prompts (all undone on Destroy)
---   Library:SaveConfig(name) / :LoadConfig(name) store every element that has a Flag
+--   window:BuildMisc() adds a ready-made, universal Misc tab: God Mode, Movement Speed,
+--     Infinite Jump, Fly, No Clip, Hide Username (any fake name), Anti AFK, Instant Prompts
+--     and a Config box with auto load (all undone on Destroy)
+--   Library:SaveConfig(name) / :LoadConfig(name) store every element that has a Flag as a
+--     Lua file (igkii/configs/name.lua); :SetAutoLoad(name, "account"|"all") picks auto load
 --   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
 -- The window opens by itself after the script finishes adding tabs (Window:PlayIntro()).
 -- Re-running a script that loads this library closes the previous window first, unless
@@ -715,67 +717,244 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Configs: every element created with a Flag can be saved and restored.
+-- A config is a Lua file (igkii/configs/<name>.lua) that returns a table.
+-- Auto load lives in igkii/autoload.lua, for one account or for every account.
 -- ---------------------------------------------------------------------------
 local SAVEABLE = { Toggle = true, Slider = true, Input = true, Dropdown = true, Keybind = true }
+local CONFIG_DIR = "igkii/configs"
+local AUTOLOAD_PATH = "igkii/autoload.lua"
 
-local function configPath(name)
-    name = tostring(name or "default"):gsub("[^%w_%-]", "_")
-    return "igkii/" .. name .. ".json"
+local function safeName(name)
+    name = tostring(name or ""):gsub("[^%w_%- ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        return nil
+    end
+    return name
+end
+
+local function ensureFolders()
+    if type(makefolder) ~= "function" or type(isfolder) ~= "function" then
+        return
+    end
+    for _, folder in ipairs({ "igkii", CONFIG_DIR }) do
+        if not isfolder(folder) then
+            pcall(makefolder, folder)
+        end
+    end
+end
+
+-- Turns a value into Lua source, or nil when it cannot be stored.
+local function toLua(value)
+    local kind = typeof(value)
+    if kind == "boolean" then
+        return tostring(value)
+    elseif kind == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return nil
+        end
+        return tostring(value)
+    elseif kind == "string" then
+        return string.format("%q", value)
+    elseif kind == "EnumItem" then
+        return tostring(value)
+    end
+    return nil
+end
+
+-- Reads a Lua file that returns a table, in a sandbox with nothing but Enum.
+local function readLuaTable(path)
+    if type(readfile) ~= "function" or type(loadstring) ~= "function" then
+        return nil, "readfile or loadstring is not available in this executor"
+    end
+    local okRead, source = pcall(readfile, path)
+    if not okRead or type(source) ~= "string" then
+        return nil, "the file could not be read"
+    end
+    local chunk = loadstring(source)
+    if not chunk then
+        return nil, "the file has a syntax error"
+    end
+    pcall(setfenv, chunk, { Enum = Enum })
+    local okRun, data = pcall(chunk)
+    if not okRun or type(data) ~= "table" then
+        return nil, "the file is not a valid table"
+    end
+    return data
 end
 
 function Library:SaveConfig(name)
+    name = safeName(name)
+    if not name then
+        return false, "type a config name first"
+    end
     if type(writefile) ~= "function" then
         return false, "writefile is not available in this executor"
     end
-    local data = {}
+    local flags = {}
     for flag, element in pairs(Library.Flags) do
         if SAVEABLE[element.Kind] and type(element.Get) == "function" then
-            local ok, value = pcall(function()
-                return element:Get()
-            end)
-            if ok and value ~= nil then
-                if typeof(value) == "EnumItem" then
-                    data[flag] = { __key = value.Name }
-                elseif type(value) == "boolean" or type(value) == "number" or type(value) == "string" then
-                    data[flag] = value
-                end
-            end
+            table.insert(flags, flag)
         end
     end
-    return pcall(function()
-        if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("igkii") then
-            makefolder("igkii")
+    table.sort(flags)
+    local lines = { "-- igkii config: " .. name, "return {" }
+    for _, flag in ipairs(flags) do
+        local ok, value = pcall(function()
+            return Library.Flags[flag]:Get()
+        end)
+        local text = ok and toLua(value) or nil
+        if text then
+            table.insert(lines, string.format("    [%q] = %s,", flag, text))
         end
-        writefile(configPath(name), game:GetService("HttpService"):JSONEncode(data))
+    end
+    table.insert(lines, "}")
+    return pcall(function()
+        ensureFolders()
+        writefile(CONFIG_DIR .. "/" .. name .. ".lua", table.concat(lines, "\n") .. "\n")
     end)
 end
 
 function Library:LoadConfig(name)
-    if type(readfile) ~= "function" then
-        return false, "readfile is not available in this executor"
+    name = safeName(name)
+    if not name then
+        return false, "type a config name first"
     end
-    local path = configPath(name)
+    local path = CONFIG_DIR .. "/" .. name .. ".lua"
     if type(isfile) == "function" and not isfile(path) then
-        return false, "no saved config named " .. tostring(name or "default")
+        return false, "no config named " .. name
     end
-    local ok, data = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(readfile(path))
-    end)
-    if not ok or type(data) ~= "table" then
-        return false, "the config file could not be read"
+    local data, err = readLuaTable(path)
+    if not data then
+        return false, err
     end
-    for flag, value in pairs(data) do
-        local element = Library.Flags[flag]
-        if element and type(element.Set) == "function" then
-            if type(value) == "table" and value.__key then
-                value = Enum.KeyCode[value.__key]
+    -- Values first, toggles last, so a toggle sees the final slider and text values.
+    for pass = 1, 2 do
+        for flag, value in pairs(data) do
+            local element = Library.Flags[flag]
+            if element and type(element.Set) == "function" and ((element.Kind == "Toggle") == (pass == 2)) then
+                pcall(function()
+                    element:Set(value)
+                end)
             end
-            pcall(function()
-                element:Set(value)
-            end)
         end
     end
     return true
+end
+
+function Library:ListConfigs()
+    local names = {}
+    if type(listfiles) == "function" then
+        local ok, files = pcall(listfiles, CONFIG_DIR)
+        if ok and type(files) == "table" then
+            for _, path in ipairs(files) do
+                local name = tostring(path):match("([^/\\]+)%.lua$")
+                if name then
+                    table.insert(names, name)
+                end
+            end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+function Library:DeleteConfig(name)
+    name = safeName(name)
+    if not name then
+        return false, "type a config name first"
+    end
+    if type(delfile) ~= "function" then
+        return false, "delfile is not available in this executor"
+    end
+    local path = CONFIG_DIR .. "/" .. name .. ".lua"
+    if type(isfile) == "function" and not isfile(path) then
+        return false, "no config named " .. name
+    end
+    return pcall(delfile, path)
+end
+
+local function readAutoLoad()
+    local data = { accounts = {} }
+    if type(isfile) == "function" and isfile(AUTOLOAD_PATH) then
+        local result = readLuaTable(AUTOLOAD_PATH)
+        if result then
+            if type(result.all) == "string" then
+                data.all = result.all
+            end
+            if type(result.accounts) == "table" then
+                for id, config in pairs(result.accounts) do
+                    if type(config) == "string" then
+                        data.accounts[tostring(id)] = config
+                    end
+                end
+            end
+        end
+    end
+    return data
+end
+
+local function writeAutoLoad(data)
+    if type(writefile) ~= "function" then
+        return false, "writefile is not available in this executor"
+    end
+    local lines = { "-- igkii auto load: the config that loads by itself", "return {" }
+    if data.all then
+        table.insert(lines, string.format("    all = %q,", data.all))
+    end
+    table.insert(lines, "    accounts = {")
+    local ids = {}
+    for id in pairs(data.accounts) do
+        table.insert(ids, id)
+    end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        table.insert(lines, string.format("        [%q] = %q,", id, data.accounts[id]))
+    end
+    table.insert(lines, "    },")
+    table.insert(lines, "}")
+    return pcall(function()
+        ensureFolders()
+        writefile(AUTOLOAD_PATH, table.concat(lines, "\n") .. "\n")
+    end)
+end
+
+-- scope "account" = this account only, "all" = every account. name nil turns it off.
+function Library:SetAutoLoad(name, scope)
+    if name ~= nil then
+        name = safeName(name)
+        if not name then
+            return false, "type a config name first"
+        end
+    end
+    local data = readAutoLoad()
+    if scope == "all" then
+        data.all = name
+    else
+        data.accounts[tostring(player.UserId)] = name
+    end
+    return writeAutoLoad(data)
+end
+
+-- Returns the config name and its scope for this account (this account wins over all).
+function Library:GetAutoLoad()
+    local data = readAutoLoad()
+    local own = data.accounts[tostring(player.UserId)]
+    if own then
+        return own, "account"
+    end
+    if data.all then
+        return data.all, "all"
+    end
+    return nil
+end
+
+function Library:RunAutoLoad()
+    local name, scope = Library:GetAutoLoad()
+    if not name then
+        return false
+    end
+    local ok, err = Library:LoadConfig(name)
+    return ok, ok and name or err, scope
 end
 
 -- ---------------------------------------------------------------------------
@@ -2566,29 +2745,20 @@ function Library.Window(opts)
         BackgroundTransparency = 1,
         Parent = sidebar,
     })
+    -- The header logo is the player's own avatar (headshot) instead of a fixed letter.
     local function logoMark(parent, size, position)
-        local mark = create("Frame", {
+        local mark = create("ImageLabel", {
             AnchorPoint = Vector2.new(0, 0.5),
             Position = position,
             Size = UDim2.fromOffset(size, size),
-            BackgroundColor3 = Theme.Accent,
+            BackgroundColor3 = Theme.Surface3,
             BorderSizePixel = 0,
+            Image = "rbxthumb://type=AvatarHeadShot&id=" .. player.UserId .. "&w=150&h=150",
+            ScaleType = Enum.ScaleType.Crop,
             Parent = parent,
         })
         corner(mark, UDim.new(0, math.floor(size * 0.3)))
-        create("UIGradient", { Rotation = 45, Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 0.45),
-        }), Parent = mark })
-        label({
-            Size = UDim2.fromScale(1, 1),
-            Text = "i",
-            TextSize = math.floor(size * 0.62),
-            FontFace = Fonts.Bold,
-            TextColor3 = Theme.AccentDark,
-            TextXAlignment = Enum.TextXAlignment.Center,
-            TextTruncate = Enum.TextTruncate.None,
-            Parent = mark,
-        })
+        stroke(mark, Theme.Accent, 0.35)
         return mark
     end
     logoMark(header, 32, UDim2.new(0, 14, 0.5, 0))
@@ -2784,8 +2954,16 @@ function Library.Window(opts)
     -- by hand; it now runs by itself once the script has finished adding its tabs
     -- (PlayIntro only ever plays once, so a manual call is still harmless).
     task.defer(function()
-        if not self._destroyed then
-            self:PlayIntro()
+        if self._destroyed then
+            return
+        end
+        local loaded, detail
+        if self._autoLoad then
+            loaded, detail = Library:RunAutoLoad()
+        end
+        self:PlayIntro()
+        if loaded then
+            self:Notify({ Title = "Config loaded", Content = tostring(detail) .. " was loaded automatically", Type = "Success", Duration = 3 })
         end
     end)
     return self
@@ -3266,7 +3444,7 @@ function Window:Tab(opts)
         Parent = page,
     })
     if opts.Desc then
-        label({
+        local descLabel = label({
             Position = UDim2.fromOffset(titleX, 44),
             Size = UDim2.new(1, -(titleX + 270), 0, 16),
             Text = opts.Desc,
@@ -3275,6 +3453,14 @@ function Window:Tab(opts)
             TextColor3 = Theme.Muted,
             Parent = page,
         })
+        -- opts.NamePrefix marks a description that ends with the player's name, so a
+        -- fake name replaces it as well.
+        if opts.NamePrefix and self._nameLabels then
+            table.insert(self._nameLabels, { descLabel, opts.NamePrefix .. player.DisplayName, opts.NamePrefix })
+            if self._fakeName then
+                descLabel.Text = opts.NamePrefix .. self._fakeName
+            end
+        end
     end
     local contentTop = opts.Desc and 82 or 68
     create("Frame", {
@@ -4235,20 +4421,31 @@ local function homeToggleChip(parent, order, text, initial, callback)
     end
 end
 
--- Hides the player's name in every label the window shows it in (sidebar profile,
--- Home banner). Only the UI is affected; use BuildMisc for the overhead name tag.
-function Window:SetNameHidden(hidden)
-    hidden = hidden == true
-    self._nameHidden = hidden
+-- Replaces the player's name in every label the window shows it in with any text.
+-- nil or an empty string restores the real name. Only this UI is changed.
+function Window:SetFakeName(fake)
+    if type(fake) ~= "string" or (fake:gsub("%s", "")) == "" then
+        fake = nil
+    end
+    self._fakeName = fake
     for _, entry in ipairs(self._nameLabels or {}) do
         local target = entry[1]
         if target and target.Parent then
-            target.Text = hidden and "Hidden" or entry[2]
+            if fake then
+                local prefix = entry[3] or (entry[2]:sub(1, 1) == "@" and "@") or ""
+                target.Text = prefix .. fake
+            else
+                target.Text = entry[2]
+            end
         end
     end
     if self._nameChipSync then
-        self._nameChipSync(hidden)
+        self._nameChipSync(fake ~= nil)
     end
+end
+
+function Window:SetNameHidden(hidden)
+    self:SetFakeName(hidden and (self._fakeNameChoice or "Hidden") or nil)
 end
 
 local function homeGraph(parent, order, title, ceiling)
@@ -4443,7 +4640,13 @@ end
 -- features: list of { Name, Get = function() -> bool }, figures: { { Title, Get } }
 -- info (optional): { Tier = "text for the banner chip" }
 function Window:BuildHome(features, figures, info)
-    local tab = self:Tab({ Name = "Home", Icon = "house", PageTitle = "Home", Desc = "Welcome back, " .. player.DisplayName })
+    local tab = self:Tab({
+        Name = "Home",
+        Icon = "house",
+        PageTitle = "Home",
+        Desc = "Welcome back, " .. (self._fakeName or player.DisplayName),
+        NamePrefix = "Welcome back, ",
+    })
     self.Home = tab
     local list = tab.List
 
@@ -4502,8 +4705,8 @@ function Window:BuildHome(features, figures, info)
     })
     table.insert(self._nameLabels, { nameLabel, player.DisplayName })
     table.insert(self._nameLabels, { userLabel, "@" .. player.Name })
-    if self._nameHidden then
-        self:SetNameHidden(true)
+    if self._fakeName then
+        self:SetFakeName(self._fakeName)
     end
     local chips = create("Frame", {
         Position = UDim2.new(0, 24, 1, -42),
@@ -4521,7 +4724,7 @@ function Window:BuildHome(features, figures, info)
     local tierChip, tierText = homeChip(chips, 1, tostring((info and info.Tier) or self.Title), Theme.Accent)
     tierChip.Active = false
     tierText.FontFace = Fonts.Bold
-    local _, syncNameChip = homeToggleChip(chips, 2, "Name", self._nameHidden == true, function(on)
+    local _, syncNameChip = homeToggleChip(chips, 2, "Name", self._fakeName ~= nil, function(on)
         self:SetNameHidden(on)
     end)
     self._nameChipSync = syncNameChip
@@ -4755,12 +4958,41 @@ end
 
 
 -- ---------------------------------------------------------------------------
--- Misc tab: character utilities
---   local misc = window:BuildMisc({ Name = "Misc" })
---   misc.Set("Fly", true)     -- Names: GodMode Speed InfiniteJump NoClip Fly HideUsername AntiAFK InstantPrompts
---   misc.Features             -- { { Name, Get } } ready for window:BuildHome(features)
---   misc.Unload()             -- turn everything off (also runs when the window is destroyed)
+-- Misc tab: universal character tools (works in any game)
+--   local misc = window:BuildMisc()
+--   misc.Set("Fly", true)    -- names: GodMode Speed InfiniteJump NoClip Fly HideUsername AntiAFK InstantPrompts
+--   misc.Active.Fly          -- true while a feature is on
+--   misc.Unload()            -- turn everything off (also runs when the window is destroyed)
+--   window:BuildHome(Library.MiscFeatures(function() return misc end))  -- Home list of Misc states
 -- ---------------------------------------------------------------------------
+Library.MiscFeatureList = {
+    { "GodMode", "God Mode" },
+    { "Speed", "Movement Speed" },
+    { "InfiniteJump", "Infinite Jump" },
+    { "NoClip", "No Clip" },
+    { "Fly", "Fly" },
+    { "HideUsername", "Hide Username" },
+    { "AntiAFK", "Anti AFK" },
+    { "InstantPrompts", "Instant Prompts" },
+}
+
+-- Builds the features list that window:BuildHome expects. getMisc is called lazily,
+-- so Home can be created before the Misc tab exists (Home stays the first tab).
+function Library.MiscFeatures(getMisc)
+    local list = {}
+    for _, entry in ipairs(Library.MiscFeatureList) do
+        local key = entry[1]
+        table.insert(list, {
+            Name = entry[2],
+            Get = function()
+                local misc = getMisc()
+                return misc ~= nil and misc.Active[key] == true
+            end,
+        })
+    end
+    return list
+end
+
 function Window:BuildMisc(opts)
     opts = opts or {}
     local Workspace = game:GetService("Workspace")
@@ -4773,15 +5005,15 @@ function Window:BuildMisc(opts)
         Name = opts.Name or "Misc",
         Icon = opts.Icon or "settings",
         PageTitle = opts.Name or "Misc",
-        Desc = "Character tools and quality of life",
+        Desc = "Works in every game",
     })
 
     local active = {}
-    local settings = { Speed = 50, SpeedMethod = "WalkSpeed", FlySpeed = 60 }
     local saved = {}
     local bags = {}
     local appliers = {}
     local toggles = {}
+    local controls = {}
     local weakKeys = { __mode = "k" }
 
     -- A bag holds everything one feature started (connections, instances, undo
@@ -4824,8 +5056,15 @@ function Window:BuildMisc(opts)
         return char and (char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart)
     end
 
-    local function notifyFail(title, content)
-        window:Notify({ Title = title, Content = content, Type = "Warning", Duration = 3 })
+    local function trimmed(value)
+        local text = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        return text
+    end
+
+    local function sliderValue(name, fallback)
+        local slider = controls[name]
+        local value = slider and slider:Get()
+        return tonumber(value) or fallback
     end
 
     -- God mode ---------------------------------------------------------------
@@ -4865,44 +5104,27 @@ function Window:BuildMisc(opts)
     end
 
     -- Movement speed ---------------------------------------------------------
-    local function restoreWalkSpeed()
-        local hum = humanoid()
-        if hum and saved.walkSpeed then
-            hum.WalkSpeed = saved.walkSpeed
-        end
-        saved.walkSpeed = nil
-    end
-
     appliers.Speed = function()
         clearBag("speed")
+        local hum = humanoid()
         if not active.Speed then
-            restoreWalkSpeed()
+            if hum and saved.walkSpeed then
+                hum.WalkSpeed = saved.walkSpeed
+            end
+            saved.walkSpeed = nil
             return
         end
-        local hum = humanoid()
         if not hum then
             return
         end
-        if settings.SpeedMethod == "CFrame" then
-            -- Nudges the character along its move direction. Works in games that
-            -- reset WalkSpeed or check it on the server.
-            restoreWalkSpeed()
-            hold("speed", RunService.Heartbeat:Connect(function(dt)
-                local currentHum, root = humanoid(), rootPart()
-                if currentHum and root and currentHum.MoveDirection.Magnitude > 0 then
-                    local extra = math.max(settings.Speed - currentHum.WalkSpeed, 0)
-                    root.CFrame = root.CFrame + currentHum.MoveDirection * extra * dt
-                end
-            end))
-        else
-            saved.walkSpeed = saved.walkSpeed or hum.WalkSpeed
-            hum.WalkSpeed = settings.Speed
-            hold("speed", hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-                if active.Speed and hum.WalkSpeed ~= settings.Speed then
-                    hum.WalkSpeed = settings.Speed
-                end
-            end))
-        end
+        saved.walkSpeed = saved.walkSpeed or hum.WalkSpeed
+        hum.WalkSpeed = sliderValue("SpeedSlider", 50)
+        hold("speed", hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            local target = sliderValue("SpeedSlider", 50)
+            if active.Speed and hum.WalkSpeed ~= target then
+                hum.WalkSpeed = target
+            end
+        end))
     end
 
     -- Infinite jump ----------------------------------------------------------
@@ -5004,7 +5226,7 @@ function Window:BuildMisc(opts)
             if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.Q) then
                 vertical -= 1
             end
-            velocity.Velocity = (direction + Vector3.new(0, vertical, 0)) * settings.FlySpeed
+            velocity.Velocity = (direction + Vector3.new(0, vertical, 0)) * sliderValue("FlySlider", 60)
             local look = cam.CFrame.LookVector
             local flat = Vector3.new(look.X, 0, look.Z)
             if flat.Magnitude > 0.001 then
@@ -5014,31 +5236,28 @@ function Window:BuildMisc(opts)
     end
 
     -- Hide username ----------------------------------------------------------
-    -- Hides the name in this UI, the overhead name tag and the player list on
-    -- your own screen. Other players still see your name.
-    local hiddenTags = setmetatable({}, weakKeys)
-    local function hideTag(instance)
-        if instance:IsA("BillboardGui") and instance.Enabled then
-            hiddenTags[instance] = true
-            instance.Enabled = false
+    -- Swaps your name for any text you type: in this UI, on your own overhead name
+    -- tag and (by hiding the player list) everywhere else on your screen. Other
+    -- players still see your real name, because that cannot be changed from here.
+    local function fakeName()
+        local text = trimmed(controls.FakeName and controls.FakeName:Get())
+        if text == "" then
+            text = "Player"
         end
+        return text
     end
 
     appliers.HideUsername = function()
-        clearBag("hidename")
         local hum = humanoid()
         if active.HideUsername then
-            window:SetNameHidden(true)
+            local fake = fakeName()
+            window._fakeNameChoice = fake
+            window:SetFakeName(fake)
             if hum then
-                saved.displayType = saved.displayType or hum.DisplayDistanceType
-                hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-            end
-            local char = player.Character
-            if char then
-                for _, descendant in ipairs(char:GetDescendants()) do
-                    hideTag(descendant)
+                if saved.humanoidName == nil then
+                    saved.humanoidName = hum.DisplayName
                 end
-                hold("hidename", char.DescendantAdded:Connect(hideTag))
+                hum.DisplayName = fake
             end
             pcall(function()
                 if saved.playerList == nil then
@@ -5047,17 +5266,11 @@ function Window:BuildMisc(opts)
                 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
             end)
         else
-            window:SetNameHidden(false)
-            if hum and saved.displayType then
-                hum.DisplayDistanceType = saved.displayType
+            window:SetFakeName(nil)
+            if hum and saved.humanoidName ~= nil then
+                hum.DisplayName = saved.humanoidName
             end
-            saved.displayType = nil
-            for tag in pairs(hiddenTags) do
-                if tag.Parent then
-                    tag.Enabled = true
-                end
-                hiddenTags[tag] = nil
-            end
+            saved.humanoidName = nil
             if saved.playerList ~= nil then
                 local wasEnabled = saved.playerList
                 saved.playerList = nil
@@ -5147,7 +5360,7 @@ function Window:BuildMisc(opts)
         local ok, err = pcall(appliers[name])
         if not ok then
             warn("[igkii] " .. name .. " failed: " .. tostring(err))
-            notifyFail(name, "Could not apply this feature in this game")
+            window:Notify({ Title = name, Content = "Could not apply this in this game", Type = "Warning", Duration = 3 })
         end
     end
 
@@ -5167,27 +5380,14 @@ function Window:BuildMisc(opts)
             setActive("Speed", value)
         end,
     })
-    character:Slider({
+    controls.SpeedSlider = character:Slider({
         Name = "Speed",
         Min = 16,
         Max = 300,
         Step = 1,
-        Default = settings.Speed,
+        Default = 50,
         Flag = "Misc.SpeedValue",
-        Callback = function(value)
-            settings.Speed = value
-            if active.Speed then
-                setActive("Speed", true)
-            end
-        end,
-    })
-    character:Dropdown({
-        Name = "Speed Method",
-        Options = { "WalkSpeed", "CFrame" },
-        Default = "WalkSpeed",
-        Flag = "Misc.SpeedMethod",
-        Callback = function(value)
-            settings.SpeedMethod = value
+        Callback = function()
             if active.Speed then
                 setActive("Speed", true)
             end
@@ -5200,14 +5400,6 @@ function Window:BuildMisc(opts)
             setActive("InfiniteJump", value)
         end,
     })
-    toggles.NoClip = character:Toggle({
-        Name = "No Clip",
-        Flag = "Misc.NoClip",
-        Callback = function(value)
-            setActive("NoClip", value)
-        end,
-    })
-    local noclipKey = character:Keybind({ Name = "No Clip Key", Default = Enum.KeyCode.N, Flag = "Misc.NoClipKey" })
     toggles.Fly = character:Toggle({
         Name = "Fly",
         Desc = "Space up, Ctrl or Q down",
@@ -5216,26 +5408,50 @@ function Window:BuildMisc(opts)
             setActive("Fly", value)
         end,
     })
-    character:Slider({
+    controls.FlySlider = character:Slider({
         Name = "Fly Speed",
         Min = 10,
         Max = 300,
         Step = 1,
-        Default = settings.FlySpeed,
+        Default = 60,
         Flag = "Misc.FlySpeed",
+    })
+    controls.FlyKey = character:Keybind({
+        Name = "Fly Toggle Key",
+        Desc = "Optional: click to bind a key",
+        Flag = "Misc.FlyKey",
+    })
+    toggles.NoClip = character:Toggle({
+        Name = "No Clip",
+        Flag = "Misc.NoClip",
         Callback = function(value)
-            settings.FlySpeed = value
+            setActive("NoClip", value)
         end,
     })
-    local flyKey = character:Keybind({ Name = "Fly Key", Default = Enum.KeyCode.F, Flag = "Misc.FlyKey" })
+    controls.NoClipKey = character:Keybind({
+        Name = "No Clip Toggle Key",
+        Desc = "Optional: click to bind a key",
+        Flag = "Misc.NoClipKey",
+    })
 
     local utility = tab:Groupbox({ Name = "Utility", Side = "Right" })
     toggles.HideUsername = utility:Toggle({
         Name = "Hide Username",
-        Desc = "Your name, tag and player list",
+        Desc = "Shows the fake name below instead",
         Flag = "Misc.HideUsername",
         Callback = function(value)
             setActive("HideUsername", value)
+        end,
+    })
+    controls.FakeName = utility:Input({
+        Name = "Fake Name",
+        Placeholder = "Type any name...",
+        Default = "",
+        Flag = "Misc.FakeName",
+        Callback = function()
+            if active.HideUsername then
+                setActive("HideUsername", true)
+            end
         end,
     })
     toggles.AntiAFK = utility:Toggle({
@@ -5255,36 +5471,155 @@ function Window:BuildMisc(opts)
         end,
     })
 
+    -- Config ---------------------------------------------------------------
+    -- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for
+    -- this account only or for every account.
     local configBox = tab:Groupbox({ Name = "Config", Side = "Right" })
+    local configNames = Library:ListConfigs()   -- the dropdown reads this table, so it is refreshed in place
+    local function refreshConfigs()
+        local fresh = Library:ListConfigs()
+        table.clear(configNames)
+        for _, name in ipairs(fresh) do
+            table.insert(configNames, name)
+        end
+    end
+    local function configName()
+        local typed = trimmed(controls.ConfigName and controls.ConfigName:Get())
+        if typed ~= "" then
+            return typed
+        end
+        local picked = controls.ConfigList and controls.ConfigList:Get()
+        if picked and trimmed(picked) ~= "" then
+            return trimmed(picked)
+        end
+        return nil
+    end
+    local function report(ok, title, detail)
+        window:Notify({
+            Title = ok and title or (title .. " failed"),
+            Content = tostring(detail or ""),
+            Type = ok and "Success" or "Error",
+            Duration = 3,
+        })
+    end
+
+    controls.ConfigName = configBox:Input({
+        Name = "Config Name",
+        Placeholder = "Type a config name...",
+        Default = "",
+    })
+    controls.ConfigList = configBox:Dropdown({
+        Name = "Saved Configs",
+        Options = configNames,
+        Default = configNames[1],
+        Callback = function(value)
+            if value then
+                controls.ConfigName:Set(value)
+            end
+        end,
+    })
     configBox:Button({
         Name = "Save Config",
         Callback = function()
-            local ok, err = Library:SaveConfig("default")
-            window:Notify({
-                Title = ok and "Config saved" or "Save failed",
-                Content = ok and "Saved as igkii/default.json" or tostring(err),
-                Type = ok and "Success" or "Error",
-                Duration = 3,
-            })
+            local name = configName()
+            if not name then
+                report(false, "Save", "Type a config name first")
+                return
+            end
+            local ok, err = Library:SaveConfig(name)
+            refreshConfigs()
+            report(ok, "Config saved", ok and ("Saved as " .. name) or err)
         end,
     })
     configBox:Button({
         Name = "Load Config",
         Callback = function()
-            local ok, err = Library:LoadConfig("default")
-            window:Notify({
-                Title = ok and "Config loaded" or "Load failed",
-                Content = ok and "Restored your saved settings" or tostring(err),
-                Type = ok and "Success" or "Error",
-                Duration = 3,
-            })
+            local name = configName()
+            if not name then
+                report(false, "Load", "Type or pick a config name first")
+                return
+            end
+            local ok, err = Library:LoadConfig(name)
+            report(ok, "Config loaded", ok and ("Loaded " .. name) or err)
+        end,
+    })
+    configBox:Button({
+        Name = "Delete Config",
+        Callback = function()
+            local name = configName()
+            if not name then
+                report(false, "Delete", "Type or pick a config name first")
+                return
+            end
+            local ok, err = Library:DeleteConfig(name)
+            refreshConfigs()
+            report(ok, "Config deleted", ok and ("Deleted " .. name) or err)
         end,
     })
 
-    -- Hotkeys. A key that is being rebound is skipped so the rebind press does
-    -- not also flip the feature.
-    hold("core", UserInputService.InputBegan:Connect(function(input, processed)
-        if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then
+    local SCOPE_ACCOUNT, SCOPE_ALL = "This account only", "All accounts"
+    local startName, startScope = Library:GetAutoLoad()
+    local lastScope = startScope or "account"
+    local function chosenScope()
+        return controls.AutoScope:Get() == SCOPE_ALL and "all" or "account"
+    end
+    controls.AutoScope = configBox:Dropdown({
+        Name = "Auto Load For",
+        Options = { SCOPE_ACCOUNT, SCOPE_ALL },
+        Default = SCOPE_ACCOUNT,
+        Callback = function(value)
+            local scope = value == SCOPE_ALL and "all" or "account"
+            if controls.AutoLoad:Get() then
+                local name = configName()
+                if name then
+                    Library:SetAutoLoad(nil, lastScope)
+                    Library:SetAutoLoad(name, scope)
+                end
+            end
+            lastScope = scope
+        end,
+    })
+    controls.AutoLoad = configBox:Toggle({
+        Name = "Auto Load",
+        Desc = "Loads the config when the script starts",
+        Callback = function(value)
+            if value then
+                local name = configName()
+                if not name then
+                    report(false, "Auto load", "Type or pick a config name first")
+                    controls.AutoLoad:Set(false, true)
+                    return
+                end
+                if not table.find(configNames, name) then
+                    report(false, "Auto load", "Save the config first")
+                    controls.AutoLoad:Set(false, true)
+                    return
+                end
+                local ok, err = Library:SetAutoLoad(name, chosenScope())
+                lastScope = chosenScope()
+                report(ok, "Auto load on", ok and (name .. " · " .. (lastScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT)) or err)
+            else
+                Library:SetAutoLoad(nil, lastScope)
+                report(true, "Auto load off", "Nothing loads by itself now")
+            end
+        end,
+    })
+    if startName then
+        controls.ConfigName:Set(startName)
+        controls.AutoScope:Set(startScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT, true)
+        controls.AutoLoad:Set(true, true)
+    end
+    if opts.AutoLoad ~= false then
+        self._autoLoad = true
+    end
+
+    -- Hotkeys. Ignored only while a text box is being typed in; a key that was just
+    -- used to rebind a Keybind is skipped so the rebind press does not flip the feature.
+    hold("core", UserInputService.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.Keyboard then
+            return
+        end
+        if UserInputService:GetFocusedTextBox() then
             return
         end
         local code = input.KeyCode
@@ -5295,9 +5630,9 @@ function Window:BuildMisc(opts)
             if window._consumedKey == code and os.clock() - (window._consumedAt or 0) < 0.25 then
                 return
             end
-            if code == flyKey:Get() then
+            if code == controls.FlyKey:Get() then
                 toggles.Fly:Set(not toggles.Fly:Get())
-            elseif code == noclipKey:Get() then
+            elseif code == controls.NoClipKey:Get() then
                 toggles.NoClip:Set(not toggles.NoClip:Get())
             end
         end)
@@ -5306,7 +5641,7 @@ function Window:BuildMisc(opts)
     -- After a respawn the character-bound features are applied to the new body.
     local CHARACTER_FEATURES = { "GodMode", "Speed", "Fly", "HideUsername" }
     hold("core", player.CharacterAdded:Connect(function(char)
-        saved.health, saved.walkSpeed, saved.platformStand, saved.displayType = nil, nil, nil, nil
+        saved.health, saved.walkSpeed, saved.platformStand, saved.humanoidName = nil, nil, nil, nil
         char:WaitForChild("Humanoid", 10)
         char:WaitForChild("HumanoidRootPart", 10)
         task.wait(0.1)
@@ -5344,16 +5679,12 @@ function Window:BuildMisc(opts)
         unload(true)
     end)
 
-    local features = {}
-    for _, name in ipairs({ "GodMode", "Speed", "InfiniteJump", "NoClip", "Fly", "HideUsername", "AntiAFK", "InstantPrompts" }) do
-        table.insert(features, { Name = name:gsub("(%l)(%u)", "%1 %2"), Get = function() return active[name] == true end })
-    end
-
-    return {
+    local result
+    result = {
         Tab = tab,
         Toggles = toggles,
-        Features = features,
-        Settings = settings,
+        Controls = controls,
+        Active = active,
         Set = function(name, value)
             local toggle = toggles[name]
             if toggle then
@@ -5364,6 +5695,10 @@ function Window:BuildMisc(opts)
             unload(false)
         end,
     }
+    result.Features = Library.MiscFeatures(function()
+        return result
+    end)
+    return result
 end
 
 
