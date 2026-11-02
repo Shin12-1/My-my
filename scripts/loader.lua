@@ -8,17 +8,12 @@ local env = (getgenv and getgenv()) or _G
 local BASE = "https://igkii.kiantejero.workers.dev"   -- your Worker link, no slash at the end
 
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
+-- Games that are not listed here get the universal script (Home + Misc).
 local routes = {
-    [97617452700163]  = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
-    [10770933473]     = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
-    [123331132687572] = { "Game 2 (Misc)",    "scripts/misc.lua" },     -- PlaceId
-    [10340746117]     = { "Game 2 (Misc)",    "scripts/misc.lua" },     -- GameId
+    [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
+    [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
 }
-
-if BASE:find("YOUR%-NAME") then
-    warn("[igkii] BASE still has the placeholder. Put your real Worker link in loader.lua")
-    return
-end
+local FALLBACK = { "Universal", "scripts/universal.lua" }
 
 local function get(url)
     local ok, body = pcall(game.HttpGet, game, url)
@@ -41,11 +36,8 @@ local function fetch(path)
     return nil, err
 end
 
-local route = routes[game.PlaceId] or routes[game.GameId]
-if not route then
-    warn("[igkii] no script for this game (PlaceId " .. game.PlaceId .. ", GameId " .. game.GameId .. ")")
-    return
-end
+local route = routes[game.PlaceId] or routes[game.GameId] or FALLBACK
+print("[igkii] PlaceId " .. game.PlaceId .. ", GameId " .. game.GameId .. " -> " .. route[1])
 
 env.IGKII_FETCH = function(path)
     local body, where = fetch(path)
