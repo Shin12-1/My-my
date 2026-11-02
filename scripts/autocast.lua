@@ -14,7 +14,7 @@ local CONFIG = {
     CastsPerFrame = 1,
 }
 
--- Load the UI library safely (THIS IS THE FIXED PART)
+-- Load the UI library safely
 local okLoad, Library = pcall(function()
     local loadFn = loadstring or (getgenv and getgenv().loadstring)
     assert(type(loadFn) == "function", "loadstring is not available in this executor")
@@ -22,12 +22,22 @@ local okLoad, Library = pcall(function()
     local source = fetch("igkii_lib.lua")
     assert(type(source) == "string" and source ~= "", "the library download came back empty")
 
+    -- Remove hidden bytes (BOMs, null bytes) that break Lua compilation
+    source = source:gsub("^\239\187\191", "") -- UTF-8 BOM
+    source = source:gsub("^\255\254", "")     -- UTF-16 LE BOM
+    source = source:gsub("^\254\255", "")     -- UTF-16 BE BOM
+    source = source:gsub("%z", "")            -- Null bytes
+
     local chunk, compileErr = loadFn(source, "igkii_lib")
     assert(chunk, "igkii_lib.lua failed to compile: " .. tostring(compileErr))
 
     return chunk()
 end)
 
+if not okLoad or type(Library) ~= "table" then
+    warn("[Cast] could not load the UI library: " .. tostring(Library))
+    return
+end
 if not okLoad or type(Library) ~= "table" then
     warn("[Cast] could not load the UI library: " .. tostring(Library))
     return
