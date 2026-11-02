@@ -4,26 +4,31 @@ local RunService = game:GetService("RunService")
 
 local env = (getgenv and getgenv()) or _G
 
--- The loader provides IGKII_FETCH. This fallback lets the file also run on its own.
 local fetch = env.IGKII_FETCH or function(path)
     return game:HttpGet("https://igkii.kiantejero.workers.dev/scripts/" .. path)
 end
 
 local CONFIG = {
-    Args = {},            -- arguments for Cast, copy them from Cobalt
+    Args = {}, 
     CastsPerFrame = 1,
 }
 
--- SAFE LOAD (This prevents Line 18 from crashing)
 local okLoad, Library = pcall(function()
     local loadFn = loadstring or (getgenv and getgenv().loadstring)
-    assert(type(loadFn) == "function", "loadstring missing")
+    assert(type(loadFn) == "function", "loadstring is missing")
 
     local source = fetch("igkii_lib.lua")
-    assert(type(source) == "string" and source ~= "", "Library download was empty (404)")
+    assert(type(source) == "string" and source ~= "", "Library download was empty")
+
+    -- Automatically strip hidden characters that cause "Incomplete statement"
+    source = source:gsub("^\239\187\191", "") 
+    source = source:gsub("^\255\254", "")     
+    source = source:gsub("^\254\255", "")     
+    source = source:gsub("%z", "")            
 
     local chunk, compileErr = loadFn(source, "igkii_lib")
     assert(chunk, "Compile error: " .. tostring(compileErr))
+
     return chunk()
 end)
 
