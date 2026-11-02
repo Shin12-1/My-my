@@ -5,7 +5,7 @@ end
 
 local env = (getgenv and getgenv()) or _G
 
-local BASE = "https://igkii.YOUR-NAME.workers.dev"   -- your real Worker link, no slash at the end
+local BASE = "https://igkii.kiantejero.workers.dev/"   -- your real Worker link, no slash at the end
 
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 local routes = {
