@@ -6,7 +6,7 @@ end
 local env = (getgenv and getgenv()) or _G
 
 local BASE = "https://raw.githubusercontent.com/Shin12-1/My-my/refs/heads/main"
-local TOKEN = env.IGKII_TOKEN or "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"   -- set by your run line, never stored in the repo
+local TOKEN = env.IGKII_TOKEN or ""   -- set by your run line, never stored in the repo
 
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 local routes = {
@@ -14,7 +14,7 @@ local routes = {
     [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
 }
 
-local http = request or http_request or (syn and syn.request)
+local http = request or http_request
 
 local function get(url)
     if TOKEN ~= "" and http then
