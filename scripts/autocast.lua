@@ -4,34 +4,21 @@ local RunService = game:GetService("RunService")
 
 local env = (getgenv and getgenv()) or _G
 
-local fetch = env.IGKII_FETCH or function(path)
-    return game:HttpGet("https://igkii.kiantejero.workers.dev/scripts/" .. path)
+-- The loader provides IGKII_FETCH.
+local fetch = env.IGKII_FETCH
+if not fetch then
+    warn("[Cast] run this through the loader")
+    return
 end
 
 local CONFIG = {
-    Args = {}, 
+    Args = {},            -- arguments for Cast, copy them from Cobalt
     CastsPerFrame = 1,
 }
 
 local okLoad, Library = pcall(function()
-    local loadFn = loadstring or (getgenv and getgenv().loadstring)
-    assert(type(loadFn) == "function", "loadstring is missing")
-
-    local source = fetch("igkii_lib.lua")
-    assert(type(source) == "string" and source ~= "", "Library download was empty")
-
-    -- Automatically strip hidden characters that cause "Incomplete statement"
-    source = source:gsub("^\239\187\191", "") 
-    source = source:gsub("^\255\254", "")     
-    source = source:gsub("^\254\255", "")     
-    source = source:gsub("%z", "")            
-
-    local chunk, compileErr = loadFn(source, "igkii_lib")
-    assert(chunk, "Compile error: " .. tostring(compileErr))
-
-    return chunk()
+    return loadstring(fetch("igkii_lib.lua"))()
 end)
-
 if not okLoad or type(Library) ~= "table" then
     warn("[Cast] could not load the UI library: " .. tostring(Library))
     return
@@ -58,12 +45,27 @@ local function cast()
 end
 
 local connection = RunService.Heartbeat:Connect(function()
-    if not enabled then return end
-    for _ = 1, castsPerFrame do pcall(cast) end
+    if not enabled then
+        return
+    end
+    for _ = 1, castsPerFrame do
+        pcall(cast)
+    end
 end)
 
+local misc
+
 local Window = Library.Window({ Title = "Auto Cast" })
-Window:BuildHome({ { Name = "Auto Cast", Get = function() return enabled end } }, nil, { Tier = "Cast" })
+
+-- Home first, then the game's own tab, then the universal Misc tab.
+local features = { { Name = "Auto Cast", Get = function() return enabled end } }
+for _, feature in ipairs(Library.MiscFeatures(function() return misc end)) do
+    table.insert(features, feature)
+end
+Window:BuildHome(features, {
+    { Title = "Place ID", Get = function() return tostring(game.PlaceId) end },
+    { Title = "Game ID", Get = function() return tostring(game.GameId) end },
+}, { Tier = "Cast" })
 
 local main = Window:Tab({ Name = "Main", Icon = "star", PageTitle = "Main", Desc = "Auto clicker" })
 local box = main:Groupbox({ Name = "Auto Cast", Side = "Left" })
@@ -72,18 +74,24 @@ box:Toggle({
     Name = "Auto Cast",
     Desc = "Fires Remotes.Cast every frame",
     Flag = "AutoCast",
-    Callback = function(value) enabled = value end,
+    Callback = function(value)
+        enabled = value
+    end,
 })
 
 box:Slider({
     Name = "Casts per frame",
-    Min = 1, Max = 10, Step = 1,
+    Min = 1,
+    Max = 10,
+    Step = 1,
     Default = castsPerFrame,
     Flag = "CastsPerFrame",
-    Callback = function(value) castsPerFrame = value end,
+    Callback = function(value)
+        castsPerFrame = value
+    end,
 })
 
-Window:BuildMisc()
+misc = Window:BuildMisc()
 
 Window:OnDestroy(function()
     enabled = false
