@@ -1,9 +1,12 @@
--- igkii loader: one link, many games
+-- igkii loader: one link, many games (private repo)
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
-local BASE = "https://raw.githubusercontent.com/Shin12-1/igkii/main"
+local env = (getgenv and getgenv()) or _G
+
+local BASE = "https://raw.githubusercontent.com/Shin12-1/My-my/refs/heads/main"
+local TOKEN = env.IGKII_TOKEN or ""   -- set by your run line, never stored in the repo
 
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 local routes = {
@@ -11,12 +14,38 @@ local routes = {
     [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
 }
 
-local function fetch(path)
-    local ok, body = pcall(game.HttpGet, game, BASE .. "/" .. path)
+local http = request or http_request or (syn and syn.request)
+
+local function get(url)
+    if TOKEN ~= "" and http then
+        local ok, res = pcall(http, {
+            Url = url,
+            Method = "GET",
+            Headers = { Authorization = "token " .. TOKEN },
+        })
+        if ok and res and res.StatusCode == 200 then
+            return res.Body
+        end
+        return nil, "HTTP " .. tostring(ok and res and res.StatusCode or "request failed")
+    end
+    local ok, body = pcall(game.HttpGet, game, url)
     if ok then
         return body
     end
     return nil, tostring(body)
+end
+
+-- Looks in the repo root first, then in the scripts folder.
+local function fetch(path)
+    local body, err = get(BASE .. "/" .. path)
+    if body then
+        return body
+    end
+    local fallback = get(BASE .. "/scripts/" .. path)
+    if fallback then
+        return fallback
+    end
+    return nil, err
 end
 
 local route = routes[game.PlaceId] or routes[game.GameId]
@@ -25,7 +54,6 @@ if not route then
     return
 end
 
-local env = (getgenv and getgenv()) or _G
 env.IGKII_FETCH = function(path)
     local body, err = fetch(path)
     assert(body, "could not download " .. path .. ": " .. tostring(err))
