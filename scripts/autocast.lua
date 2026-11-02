@@ -6,7 +6,7 @@ local env = (getgenv and getgenv()) or _G
 
 -- The loader provides IGKII_FETCH. This fallback lets the file also run on its own.
 local fetch = env.IGKII_FETCH or function(path)
-    return game:HttpGet("https://raw.githubusercontent.com/Shin12-1/My-my/refs/heads/main/scripts/" .. path)
+    return game:HttpGet("https://igkii.kiantejero.workers.dev/scripts/" .. path)
 end
 
 local CONFIG = {
