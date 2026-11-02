@@ -4,58 +4,43 @@ if not game:IsLoaded() then
 end
 
 local env = (getgenv and getgenv()) or _G
-
--- Everything is served from the same worker that hosts loader.lua.
 local BASE = "https://igkii.kiantejero.workers.dev"
-local TOKEN = env.IGKII_TOKEN or ""   -- set by your run line if the worker is private
 
--- [PlaceId or GameId] = { "Display name", "path inside the worker" }
 local routes = {
-    [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
-    [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
+    [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },
+    [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },
 }
 
 local http = request or http_request
 
 local function get(url)
+    -- CACHE BUSTER: Forces a fresh download every time
+    local separator = url:find("%?") and "&" or "?"
+    url = url .. separator .. "t=" .. tostring(os.time()) .. math.random(1000, 9999)
+
     if TOKEN ~= "" and http then
-        local ok, res = pcall(http, {
-            Url = url,
-            Method = "GET",
-            Headers = { Authorization = "token " .. TOKEN },
-        })
-        if ok and res and res.StatusCode == 200 then
-            return res.Body
-        end
-        return nil, "HTTP " .. tostring(ok and res and res.StatusCode or "request failed")
+        local ok, res = pcall(http, { Url = url, Method = "GET", Headers = { Authorization = "token " .. TOKEN } })
+        if ok and res and res.StatusCode == 200 then return res.Body end
+        return nil, "HTTP Error"
     end
+    
     local ok, body = pcall(game.HttpGet, game, url)
-    if ok then
-        return body
-    end
+    if ok then return body end
     return nil, tostring(body)
 end
 
--- Looks at the exact path first, then under /scripts/ as a convenience.
 local function fetch(path)
-    local body, err = get(BASE .. "/" .. path)
-    if body then
-        return body
-    end
+    local body = get(BASE .. "/" .. path)
+    if body then return body end
     if path:sub(1, 8) ~= "scripts/" then
         local fallback = get(BASE .. "/scripts/" .. path)
-        if fallback then
-            return fallback
-        end
+        if fallback then return fallback end
     end
-    return nil, err
+    return nil, "Not found"
 end
 
 local route = routes[game.PlaceId] or routes[game.GameId]
-if not route then
-    warn("[igkii] no script for this game (PlaceId " .. game.PlaceId .. ", GameId " .. game.GameId .. ")")
-    return
-end
+if not route then return warn("Game not supported") end
 
 env.IGKII_FETCH = function(path)
     local body, err = fetch(path)
@@ -64,18 +49,10 @@ env.IGKII_FETCH = function(path)
 end
 
 local source, err = fetch(route[2])
-if not source then
-    warn("[igkii] could not download " .. route[1] .. ": " .. tostring(err))
-    return
-end
+if not source then return warn("Could not download: " .. tostring(err)) end
 
 local fn, compileErr = loadstring(source)
-if not fn then
-    warn("[igkii] " .. route[1] .. " has a syntax error: " .. tostring(compileErr))
-    return
-end
+if not fn then return warn("Syntax error: " .. tostring(compileErr)) end
 
 local ok, runErr = pcall(fn)
-if not ok then
-    warn("[igkii] " .. route[1] .. " errored: " .. tostring(runErr))
-end
+if not ok then warn("Error: " .. tostring(runErr)) end
