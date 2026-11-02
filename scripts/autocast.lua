@@ -1,109 +1,59 @@
--- Auto Cast toggle  |  ReplicatedStorage.Remotes.Cast  |  igkii UI
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+-- igkii loader: one link, many games
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 local env = (getgenv and getgenv()) or _G
+local BASE = "https://igkii.kiantejero.workers.dev"
+local TOKEN = env.IGKII_TOKEN or "" -- Fixed: This line was missing!
 
--- The loader provides IGKII_FETCH. This fallback lets the file also run on its own.
-local fetch = env.IGKII_FETCH or function(path)
-    return game:HttpGet("https://igkii.kiantejero.workers.dev/scripts/" .. path)
-end
-
-local CONFIG = {
-    Args = {},            -- arguments for Cast, copy them from Cobalt
-    CastsPerFrame = 1,
+local routes = {
+    [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },
+    [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },
 }
 
--- Load the UI library safely
-local okLoad, Library = pcall(function()
-    local loadFn = loadstring or (getgenv and getgenv().loadstring)
-    assert(type(loadFn) == "function", "loadstring is not available in this executor")
+local http = request or http_request
 
-    local source = fetch("igkii_lib.lua")
-    assert(type(source) == "string" and source ~= "", "the library download came back empty")
+local function get(url)
+    -- CACHE BUSTER: Forces a fresh download every time
+    local separator = url:find("%?") and "&" or "?"
+    url = url .. separator .. "t=" .. tostring(os.time()) .. math.random(1000, 9999)
 
-    -- Strip invisible BOMs and null bytes
-    source = source:gsub("^\239\187\191", "")
-    source = source:gsub("^\255\254", "")
-    source = source:gsub("^\254\255", "")
-    source = source:gsub("%z", "")
-
-    local chunk, compileErr = loadFn(source, "igkii_lib")
-    assert(chunk, "igkii_lib.lua failed to compile: " .. tostring(compileErr))
-
-    return chunk()
-end)
-
-if not okLoad or type(Library) ~= "table" then
-    warn("[Cast] could not load the UI library: " .. tostring(Library))
-    return
+    if TOKEN ~= "" and http then
+        local ok, res = pcall(http, { Url = url, Method = "GET", Headers = { Authorization = "token " .. TOKEN } })
+        if ok and res and res.StatusCode == 200 then return res.Body end
+        return nil, "HTTP Error"
+    end
+    
+    local ok, body = pcall(game.HttpGet, game, url)
+    if ok then return body end
+    return nil, tostring(body)
 end
 
-local remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
-local remote = remotes and remotes:WaitForChild("Cast", 10)
-if not remote then
-    warn("[Cast] ReplicatedStorage.Remotes.Cast was not found")
-    return
+local function fetch(path)
+    local body = get(BASE .. "/" .. path)
+    if body then return body end
+    if path:sub(1, 8) ~= "scripts/" then
+        local fallback = get(BASE .. "/scripts/" .. path)
+        if fallback then return fallback end
+    end
+    return nil, "Not found"
 end
 
-local enabled = false
-local castsPerFrame = CONFIG.CastsPerFrame
+local route = routes[game.PlaceId] or routes[game.GameId]
+if not route then return warn("Game not supported") end
 
-local function cast()
-    if remote:IsA("RemoteEvent") then
-        remote:FireServer(table.unpack(CONFIG.Args))
-    elseif remote:IsA("RemoteFunction") then
-        task.spawn(function()
-            remote:InvokeServer(table.unpack(CONFIG.Args))
-        end)
-    end
+env.IGKII_FETCH = function(path)
+    local body, err = fetch(path)
+    assert(body, "could not download " .. path .. ": " .. tostring(err))
+    return body
 end
 
-local connection = RunService.Heartbeat:Connect(function()
-    if not enabled then
-        return
-    end
-    for _ = 1, castsPerFrame do
-        pcall(cast)
-    end
-end)
+local source, err = fetch(route[2])
+if not source then return warn("Could not download: " .. tostring(err)) end
 
-local Window = Library.Window({ Title = "Auto Cast" })
+local fn, compileErr = loadstring(source)
+if not fn then return warn("Syntax error: " .. tostring(compileErr)) end
 
-Window:BuildHome({
-    { Name = "Auto Cast", Get = function() return enabled end },
-}, nil, { Tier = "Cast" })
-
-local main = Window:Tab({ Name = "Main", Icon = "star", PageTitle = "Main", Desc = "Auto clicker" })
-local box = main:Groupbox({ Name = "Auto Cast", Side = "Left" })
-
-box:Toggle({
-    Name = "Auto Cast",
-    Desc = "Fires Remotes.Cast every frame",
-    Flag = "AutoCast",
-    Callback = function(value)
-        enabled = value
-    end,
-})
-
-box:Slider({
-    Name = "Casts per frame",
-    Min = 1,
-    Max = 10,
-    Step = 1,
-    Default = castsPerFrame,
-    Flag = "CastsPerFrame",
-    Callback = function(value)
-        castsPerFrame = value
-    end,
-})
-
-Window:BuildMisc()
-
-Window:OnDestroy(function()
-    enabled = false
-    connection:Disconnect()
-end)
-
--- Shows the window (it stays hidden until this runs)
-Window:PlayIntro()
+local ok, runErr = pcall(fn)
+if not ok then warn("Error: " .. tostring(runErr)) end
