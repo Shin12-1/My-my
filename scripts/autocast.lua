@@ -14,8 +14,21 @@ local CONFIG = {
     CastsPerFrame = 1,
 }
 
+-- Load the UI library safely:
+--   * the download is checked before it is compiled,
+--   * loadstring is verified to exist (not every executor exposes it),
+--   * a compile failure is reported instead of calling a nil chunk.
 local okLoad, Library = pcall(function()
-    return loadstring(fetch("igkii_lib.lua"))()
+    local loadFn = loadstring or (getgenv and getgenv().loadstring)
+    assert(type(loadFn) == "function", "loadstring is not available in this executor")
+
+    local source = fetch("igkii_lib.lua")
+    assert(type(source) == "string" and source ~= "", "the library download came back empty")
+
+    local chunk, compileErr = loadFn(source, "igkii_lib")
+    assert(chunk, "igkii_lib.lua failed to compile: " .. tostring(compileErr))
+
+    return chunk()
 end)
 if not okLoad or type(Library) ~= "table" then
     warn("[Cast] could not load the UI library: " .. tostring(Library))
