@@ -1,11 +1,8 @@
--- igkii loader: one link, many games
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
+if not game:IsLoaded() then game.Loaded:Wait() end
 
 local env = (getgenv and getgenv()) or _G
 local BASE = "https://igkii.kiantejero.workers.dev"
-local TOKEN = tostring(env.IGKII_TOKEN or "") -- Force string conversion to prevent nil crash
+local TOKEN = tostring(env.IGKII_TOKEN or "")
 
 local routes = {
     [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },
@@ -15,7 +12,6 @@ local routes = {
 local http = request or http_request
 
 local function get(url)
-    -- Cache buster
     local separator = url:find("%?") and "&" or "?"
     url = url .. separator .. "t=" .. tostring(os.time()) .. math.random(1000, 9999)
 
