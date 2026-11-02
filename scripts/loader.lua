@@ -5,7 +5,7 @@ end
 
 local env = (getgenv and getgenv()) or _G
 
-local BASE = "https://igkii.YOUR-NAME.workers.dev"   -- your Worker link, no slash at the end
+local BASE = "https://igkii.YOUR-NAME.workers.dev"   -- your real Worker link, no slash at the end
 
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 local routes = {
@@ -14,6 +14,11 @@ local routes = {
     [123331132687572] = { "Game 2 (Misc)",    "scripts/misc.lua" },     -- PlaceId
     [10340746117]     = { "Game 2 (Misc)",    "scripts/misc.lua" },     -- GameId
 }
+
+if BASE:find("YOUR%-NAME") then
+    warn("[igkii] BASE still has the placeholder. Put your real Worker link in loader.lua")
+    return
+end
 
 local function get(url)
     local ok, body = pcall(game.HttpGet, game, url)
@@ -27,11 +32,11 @@ end
 local function fetch(path)
     local body, err = get(BASE .. "/" .. path)
     if body then
-        return body
+        return body, BASE .. "/" .. path
     end
     local fallback = get(BASE .. "/scripts/" .. path)
     if fallback then
-        return fallback
+        return fallback, BASE .. "/scripts/" .. path
     end
     return nil, err
 end
@@ -43,20 +48,31 @@ if not route then
 end
 
 env.IGKII_FETCH = function(path)
-    local body, err = fetch(path)
-    assert(body, "could not download " .. path .. ": " .. tostring(err))
+    local body, where = fetch(path)
+    assert(body, "could not download " .. path .. ": " .. tostring(where))
+    if body:sub(1, 1) == "<" then
+        error("got a web page instead of Lua from " .. tostring(where) .. " : " .. body:sub(1, 150))
+    end
     return body
 end
 
-local source, err = fetch(route[2])
+local source, where = fetch(route[2])
 if not source then
-    warn("[igkii] could not download " .. route[1] .. ": " .. tostring(err))
+    warn("[igkii] could not download " .. route[1] .. ": " .. tostring(where))
+    return
+end
+
+if source:sub(1, 1) == "<" then
+    warn("[igkii] " .. route[1] .. " came back as a web page, not Lua")
+    warn("[igkii] link used: " .. tostring(where))
+    warn("[igkii] it starts with: " .. source:sub(1, 150))
     return
 end
 
 local fn, compileErr = loadstring(source)
 if not fn then
     warn("[igkii] " .. route[1] .. " has a syntax error: " .. tostring(compileErr))
+    warn("[igkii] it starts with: " .. source:sub(1, 150))
     return
 end
 
