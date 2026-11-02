@@ -1,14 +1,15 @@
--- igkii loader: one link, many games (private repo)
+-- igkii loader: one link, many games
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
 local env = (getgenv and getgenv()) or _G
 
-local BASE = "https://raw.githubusercontent.com/Shin12-1/My-my/refs/heads/main"
-local TOKEN = env.IGKII_TOKEN or ""   -- set by your run line, never stored in the repo
+-- Everything is served from the same worker that hosts loader.lua.
+local BASE = "https://igkii.kiantejero.workers.dev"
+local TOKEN = env.IGKII_TOKEN or ""   -- set by your run line if the worker is private
 
--- [PlaceId or GameId] = { "Display name", "path inside the repo" }
+-- [PlaceId or GameId] = { "Display name", "path inside the worker" }
 local routes = {
     [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
     [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
@@ -35,15 +36,17 @@ local function get(url)
     return nil, tostring(body)
 end
 
--- Looks in the repo root first, then in the scripts folder.
+-- Looks at the exact path first, then under /scripts/ as a convenience.
 local function fetch(path)
     local body, err = get(BASE .. "/" .. path)
     if body then
         return body
     end
-    local fallback = get(BASE .. "/scripts/" .. path)
-    if fallback then
-        return fallback
+    if path:sub(1, 8) ~= "scripts/" then
+        local fallback = get(BASE .. "/scripts/" .. path)
+        if fallback then
+            return fallback
+        end
     end
     return nil, err
 end
