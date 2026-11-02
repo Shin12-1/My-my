@@ -87,3 +87,6 @@ Window:OnDestroy(function()
     enabled = false
     connection:Disconnect()
 end)
+
+-- Shows the window (it stays hidden until this runs)
+Window:PlayIntro()
