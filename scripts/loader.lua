@@ -5,6 +5,7 @@ end
 
 local env = (getgenv and getgenv()) or _G
 local BASE = "https://igkii.kiantejero.workers.dev"
+local TOKEN = tostring(env.IGKII_TOKEN or "") -- Absolute fallback to empty string
 
 local routes = {
     [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },
