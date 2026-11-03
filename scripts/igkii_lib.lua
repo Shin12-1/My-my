@@ -4,9 +4,15 @@
 -- Returns the Library table: Library.Window({...}) -> window
 --   window:Tab / :BuildHome / :BuildMisc / :Notify / :Confirm / :OnDestroy / :Destroy
 --   tab:Groupbox -> :Toggle :Slider :Input :Dropdown :Keybind :Button :Status :Label :Section
---   window:BuildMisc() adds a ready-made, universal Misc tab: God Mode, Movement Speed,
---     Infinite Jump, Fly, No Clip, Hide Username (any fake name), Anti AFK, Instant Prompts
---     and a Config box with auto load (all undone on Destroy)
+--   window:BuildMisc() adds a ready-made, universal Misc tab (all undone on Destroy):
+--     Character: God Mode, Movement Speed, Infinite Jump, Fly, No Clip
+--     Utility:   Hide Username (any fake name), Instant Prompts, Uncapped FPS, Auto Rejoin
+--     Visual:    Full Bright, No Fog, Remove Blur, Disable Bloom/Atmosphere/Camera Shake,
+--                FPS Counter, Ping Display
+--     Performance: Low Graphics, Disable Shadows, Reduce Particles, Hide Textures, Potato mode
+--   window:BuildSettings() adds the universal Settings tab: menu key, theme, corner radius,
+--     UI scale, Unload, always-on Anti AFK and the Config box with auto load. Every window
+--     gets it by itself unless the script already has a tab called Settings.
 --   Library:SaveConfig(name) / :LoadConfig(name) store every element that has a Flag as a
 --     Lua file (igkii/configs/name.lua); :SetAutoLoad(name, "account"|"all") picks auto load
 --   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
@@ -2984,6 +2990,17 @@ function Library.Window(opts)
         if self._destroyed then
             return
         end
+        if not self._settingsBuilt then
+            local hasSettings = false
+            for _, existing in ipairs(self.Tabs) do
+                if existing.Name == "Settings" then
+                    hasSettings = true
+                end
+            end
+            if not hasSettings then
+                self:BuildSettings()
+            end
+        end
         local loaded, detail
         if self._autoLoad then
             local okAuto, autoLoaded, autoDetail = pcall(function()
@@ -5000,7 +5017,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Misc tab: universal character tools (works in any game)
 --   local misc = window:BuildMisc()
---   misc.Set("Fly", true)    -- names: GodMode Speed InfiniteJump NoClip Fly HideUsername AntiAFK InstantPrompts
+--   misc.Set("Fly", true)    -- names: GodMode Speed InfiniteJump NoClip Fly HideUsername InstantPrompts AutoRejoin ...
 --   misc.Active.Fly          -- true while a feature is on
 --   misc.Unload()            -- turn everything off (also runs when the window is destroyed)
 --   window:BuildHome(Library.MiscFeatures(function() return misc end))  -- Home list of Misc states
@@ -5012,8 +5029,8 @@ Library.MiscFeatureList = {
     { "NoClip", "No Clip" },
     { "Fly", "Fly" },
     { "HideUsername", "Hide Username" },
-    { "AntiAFK", "Anti AFK" },
     { "InstantPrompts", "Instant Prompts" },
+    { "AutoRejoin", "Auto Rejoin" },
 }
 
 -- Builds the features list that window:BuildHome expects. getMisc is called lazily,
@@ -5419,37 +5436,6 @@ function Window:_buildMisc(opts)
             end
             saved.humanoidName = nil
         end
-    end
-
-    -- Anti AFK ---------------------------------------------------------------
-    appliers.AntiAFK = function()
-        clearBag("afk")
-        if not active.AntiAFK then
-            return
-        end
-        -- Silence the game's own idle handlers when the executor can see them.
-        local silenced = {}
-        if type(getconnections) == "function" then
-            pcall(function()
-                for _, connection in ipairs(getconnections(player.Idled)) do
-                    if connection.Disable then
-                        connection:Disable()
-                        table.insert(silenced, connection)
-                    end
-                end
-            end)
-        end
-        hold("afk", function()
-            for _, connection in ipairs(silenced) do
-                pcall(function()
-                    connection:Enable()
-                end)
-            end
-        end)
-        hold("afk", player.Idled:Connect(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton2(Vector2.new())
-        end))
     end
 
     -- Instant prompts --------------------------------------------------------
@@ -5993,6 +5979,10 @@ function Window:_buildMisc(opts)
         })
     end
 
+    -- Layout: the left column is about you (Character, Utility) and the right column is
+    -- about the screen (Visual, Performance). Settings and configs live in Settings.
+    local unload
+
     local character = tab:Groupbox({ Name = "Character", Side = "Left" })
     toggles.GodMode = character:Toggle({
         Name = "God Mode",
@@ -6004,6 +5994,7 @@ function Window:_buildMisc(opts)
     })
     toggles.Speed = character:Toggle({
         Name = "Movement Speed",
+        Desc = "Run faster than normal",
         Flag = "Misc.Speed",
         Callback = function(value)
             setActive("Speed", value)
@@ -6024,6 +6015,7 @@ function Window:_buildMisc(opts)
     })
     toggles.InfiniteJump = character:Toggle({
         Name = "Infinite Jump",
+        Desc = "Jump again in mid-air",
         Flag = "Misc.InfiniteJump",
         Callback = function(value)
             setActive("InfiniteJump", value)
@@ -6047,24 +6039,17 @@ function Window:_buildMisc(opts)
     })
     toggles.NoClip = character:Toggle({
         Name = "No Clip",
+        Desc = "Walk through walls",
         Flag = "Misc.NoClip",
         Callback = function(value)
             setActive("NoClip", value)
         end,
     })
 
-    local visual = tab:Groupbox({ Name = "Visual", Side = "Left" })
-    featureToggle(visual, "FullBright", "Full Bright", "Brightens dark areas at any time")
-    featureToggle(visual, "NoFog", "No Fog", "Clearer view across the map")
-    featureToggle(visual, "RemoveBlur", "Remove Blur", "Keeps the screen sharp and clear")
-    featureToggle(visual, "DisableBloom", "Disable Bloom", "Removes glow on bright objects")
-    featureToggle(visual, "DisableAtmosphere", "Disable Atmosphere", "A cleaner, less obstructed view")
-    featureToggle(visual, "NoCameraShake", "Disable Camera Shake", "A steadier camera (best effort)")
-
-    local utility = tab:Groupbox({ Name = "Utility", Side = "Right" })
+    local utility = tab:Groupbox({ Name = "Utility", Side = "Left" })
     toggles.HideUsername = utility:Toggle({
         Name = "Hide Username",
-        Desc = "Replaces it everywhere on your screen",
+        Desc = "Replaces it everywhere on screen",
         Flag = "Misc.HideUsername",
         Callback = function(value)
             setActive("HideUsername", value)
@@ -6081,32 +6066,35 @@ function Window:_buildMisc(opts)
             end
         end,
     })
-    toggles.AntiAFK = utility:Toggle({
-        Name = "Anti AFK",
-        Desc = "No idle kick after 20 minutes",
-        Flag = "Misc.AntiAFK",
-        Callback = function(value)
-            setActive("AntiAFK", value)
-        end,
-    })
-    toggles.InstantPrompts = utility:Toggle({
-        Name = "Instant Prompts",
-        Desc = "Hold prompts trigger at once",
-        Flag = "Misc.InstantPrompts",
-        Callback = function(value)
-            setActive("InstantPrompts", value)
+    featureToggle(utility, "InstantPrompts", "Instant Prompts", "Hold prompts trigger at once")
+    featureToggle(utility, "UncappedFps", "Uncapped FPS", "Removes the 240 FPS limit")
+    featureToggle(utility, "AutoRejoin", "Auto Rejoin", "Rejoins and reloads your config")
+    utility:Button({
+        Name = "Turn Off Everything",
+        Callback = function()
+            unload(false)
+            window:Notify({ Title = "Misc", Content = "Every feature is off", Type = "Success", Duration = 2 })
         end,
     })
 
+    local visual = tab:Groupbox({ Name = "Visual", Side = "Right" })
+    featureToggle(visual, "FullBright", "Full Bright", "Brightens dark areas at any time")
+    featureToggle(visual, "NoFog", "No Fog", "A clear view across the map")
+    featureToggle(visual, "RemoveBlur", "Remove Blur", "Keeps the screen sharp")
+    featureToggle(visual, "DisableBloom", "Disable Bloom", "Removes glow on bright objects")
+    featureToggle(visual, "DisableAtmosphere", "Disable Atmosphere", "A cleaner, less hazy view")
+    featureToggle(visual, "NoCameraShake", "Disable Camera Shake", "A steadier camera (best effort)")
+    featureToggle(visual, "FpsCounter", "FPS Counter", "Shows frames per second")
+    featureToggle(visual, "PingDisplay", "Ping Display", "Shows latency in ms")
+
     local performance = tab:Groupbox({ Name = "Performance", Side = "Right" })
-    featureToggle(performance, "FpsCounter", "FPS Counter", "Shows your frames per second")
-    featureToggle(performance, "PingDisplay", "Ping Display", "Shows latency in ms")
-    featureToggle(performance, "LowGraphics", "Low Graphics", "Lowers selected graphics settings")
+    featureToggle(performance, "LowGraphics", "Low Graphics", "Lowers quality and water detail")
     featureToggle(performance, "DisableShadows", "Disable Shadows", "Less rendering work")
     featureToggle(performance, "ReduceParticles", "Reduce Particle Effects", "Fewer particles on screen")
     featureToggle(performance, "HideTextures", "Hide Textures", "Simpler surfaces, less detail")
 
-    -- Potato mode switches the performance features on together, and off again.
+    -- Potato mode switches the performance features (and the blur, bloom and atmosphere
+    -- removal) on together, and off again. It only undoes what it turned on itself.
     local POTATO_FEATURES = { "LowGraphics", "DisableShadows", "ReduceParticles", "HideTextures", "RemoveBlur", "DisableBloom", "DisableAtmosphere" }
     local potatoTurnedOn = {}
     toggles.PotatoMode = performance:Toggle({
@@ -6132,159 +6120,6 @@ function Window:_buildMisc(opts)
             end
         end,
     })
-    featureToggle(performance, "UncappedFps", "Uncapped FPS", "Removes the 240 FPS limit")
-    featureToggle(performance, "AutoRejoin", "Auto Rejoin", "Rejoins and reloads your config")
-
-    -- Config ---------------------------------------------------------------
-    -- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for
-    -- this account only or for every account.
-    local configBox = tab:Groupbox({ Name = "Config", Side = "Right" })
-    local configNames = Library:ListConfigs()   -- the dropdown reads this table, so it is refreshed in place
-    local function refreshConfigs()
-        local fresh = Library:ListConfigs()
-        table.clear(configNames)
-        for _, name in ipairs(fresh) do
-            table.insert(configNames, name)
-        end
-    end
-    -- The name box is for saving under a new name. The Saved Configs list picks the
-    -- config that Load, Delete and Auto Load use. Neither one changes the other.
-    local function typedName()
-        local text = trimmed(controls.ConfigName and controls.ConfigName:Get())
-        return text ~= "" and text or nil
-    end
-    local function pickedName()
-        local picked = controls.ConfigList and controls.ConfigList:Get()
-        picked = picked and trimmed(picked) or ""
-        return picked ~= "" and picked or nil
-    end
-    local function nameToSave()
-        return typedName() or pickedName()
-    end
-    local function nameToUse()
-        return pickedName() or typedName()
-    end
-    local function report(ok, title, detail)
-        window:Notify({
-            Title = ok and title or (title .. " failed"),
-            Content = tostring(detail or ""),
-            Type = ok and "Success" or "Error",
-            Duration = 3,
-        })
-    end
-
-    controls.ConfigName = configBox:Input({
-        Name = "Config Name",
-        Placeholder = "Type a config name...",
-        Default = "",
-    })
-    controls.ConfigList = configBox:Dropdown({
-        Name = "Saved Configs",
-        Options = configNames,
-        Default = configNames[1],
-    })
-    configBox:Button({
-        Name = "Save Config",
-        Callback = function()
-            local name = nameToSave()
-            if not name then
-                report(false, "Save", "Type a config name first")
-                return
-            end
-            local ok, err = Library:SaveConfig(name)
-            refreshConfigs()
-            if ok and table.find(configNames, name) then
-                controls.ConfigList:Set(name, true)
-            end
-            report(ok, "Config saved", ok and ("Saved as " .. name) or err)
-        end,
-    })
-    configBox:Button({
-        Name = "Load Config",
-        Callback = function()
-            local name = nameToUse()
-            if not name then
-                report(false, "Load", "Pick a saved config first")
-                return
-            end
-            local ok, err = Library:LoadConfig(name)
-            report(ok, "Config loaded", ok and ("Loaded " .. name) or err)
-        end,
-    })
-    configBox:Button({
-        Name = "Delete Config",
-        Callback = function()
-            local name = nameToUse()
-            if not name then
-                report(false, "Delete", "Pick a saved config first")
-                return
-            end
-            local ok, err = Library:DeleteConfig(name)
-            refreshConfigs()
-            if ok and pickedName() == name then
-                controls.ConfigList:Set(configNames[1] or "", true)
-            end
-            report(ok, "Config deleted", ok and ("Deleted " .. name) or err)
-        end,
-    })
-
-    local SCOPE_ACCOUNT, SCOPE_ALL = "This account only", "All accounts"
-    local startName, startScope = Library:GetAutoLoad()
-    local lastScope = startScope or "account"
-    local function chosenScope()
-        return controls.AutoScope:Get() == SCOPE_ALL and "all" or "account"
-    end
-    controls.AutoScope = configBox:Dropdown({
-        Name = "Auto Load For",
-        Options = { SCOPE_ACCOUNT, SCOPE_ALL },
-        Default = SCOPE_ACCOUNT,
-        Callback = function(value)
-            local scope = value == SCOPE_ALL and "all" or "account"
-            if controls.AutoLoad:Get() then
-                local name = nameToUse()
-                if name then
-                    Library:SetAutoLoad(nil, lastScope)
-                    Library:SetAutoLoad(name, scope)
-                end
-            end
-            lastScope = scope
-        end,
-    })
-    controls.AutoLoad = configBox:Toggle({
-        Name = "Auto Load",
-        Desc = "Loads the config when the script starts",
-        Callback = function(value)
-            if value then
-                local name = nameToUse()
-                if not name then
-                    report(false, "Auto load", "Pick a saved config first")
-                    controls.AutoLoad:Set(false, true)
-                    return
-                end
-                if not table.find(configNames, name) then
-                    report(false, "Auto load", "Save the config first")
-                    controls.AutoLoad:Set(false, true)
-                    return
-                end
-                local ok, err = Library:SetAutoLoad(name, chosenScope())
-                lastScope = chosenScope()
-                report(ok, "Auto load on", ok and (name .. " · " .. (lastScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT)) or err)
-            else
-                Library:SetAutoLoad(nil, lastScope)
-                report(true, "Auto load off", "Nothing loads by itself now")
-            end
-        end,
-    })
-    if startName then
-        if table.find(configNames, startName) then
-            controls.ConfigList:Set(startName, true)
-        end
-        controls.AutoScope:Set(startScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT, true)
-        controls.AutoLoad:Set(true, true)
-    end
-    if opts.AutoLoad ~= false then
-        self._autoLoad = true
-    end
 
     -- After a respawn the character-bound features are applied to the new body.
     local CHARACTER_FEATURES = { "GodMode", "Speed", "Fly", "HideUsername" }
@@ -6304,12 +6139,12 @@ function Window:_buildMisc(opts)
     end))
 
     local ORDER = {
-        "Fly", "NoClip", "Speed", "GodMode", "InfiniteJump", "HideUsername", "AntiAFK", "InstantPrompts",
+        "Fly", "NoClip", "Speed", "GodMode", "InfiniteJump", "HideUsername", "InstantPrompts",
         "FullBright", "NoFog", "RemoveBlur", "DisableBloom", "DisableAtmosphere", "NoCameraShake",
         "FpsCounter", "PingDisplay", "LowGraphics", "DisableShadows", "ReduceParticles", "HideTextures",
         "UncappedFps", "AutoRejoin",
     }
-    local function unload(final)
+    unload = function(final)
         for _, name in ipairs(ORDER) do
             if active[name] then
                 active[name] = false
@@ -6359,6 +6194,272 @@ function Window:_buildMisc(opts)
 end
 
 
+-- The config box: save, load and delete configs, and pick what loads by itself.
+-- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for this
+-- account only or for every account. Used by the Settings tab.
+function Window:_buildConfigBox(box, opts)
+    opts = opts or {}
+    local window = self
+    local controls = {}
+
+    local function trimmed(value)
+        local text = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        return text
+    end
+
+    -- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for
+    -- this account only or for every account.
+    local configNames = Library:ListConfigs()   -- the dropdown reads this table, so it is refreshed in place
+    local function refreshConfigs()
+        local fresh = Library:ListConfigs()
+        table.clear(configNames)
+        for _, name in ipairs(fresh) do
+            table.insert(configNames, name)
+        end
+    end
+    -- The name box is for saving under a new name. The Saved Configs list picks the
+    -- config that Load, Delete and Auto Load use. Neither one changes the other.
+    local function typedName()
+        local text = trimmed(controls.ConfigName and controls.ConfigName:Get())
+        return text ~= "" and text or nil
+    end
+    local function pickedName()
+        local picked = controls.ConfigList and controls.ConfigList:Get()
+        picked = picked and trimmed(picked) or ""
+        return picked ~= "" and picked or nil
+    end
+    local function nameToSave()
+        return typedName() or pickedName()
+    end
+    local function nameToUse()
+        return pickedName() or typedName()
+    end
+    local function report(ok, title, detail)
+        window:Notify({
+            Title = ok and title or (title .. " failed"),
+            Content = tostring(detail or ""),
+            Type = ok and "Success" or "Error",
+            Duration = 3,
+        })
+    end
+
+    controls.ConfigName = box:Input({
+        Name = "Config Name",
+        Placeholder = "Type a config name...",
+        Default = "",
+    })
+    controls.ConfigList = box:Dropdown({
+        Name = "Saved Configs",
+        Options = configNames,
+        Default = configNames[1],
+    })
+    box:Button({
+        Name = "Save Config",
+        Callback = function()
+            local name = nameToSave()
+            if not name then
+                report(false, "Save", "Type a config name first")
+                return
+            end
+            local ok, err = Library:SaveConfig(name)
+            refreshConfigs()
+            if ok and table.find(configNames, name) then
+                controls.ConfigList:Set(name, true)
+            end
+            report(ok, "Config saved", ok and ("Saved as " .. name) or err)
+        end,
+    })
+    box:Button({
+        Name = "Load Config",
+        Callback = function()
+            local name = nameToUse()
+            if not name then
+                report(false, "Load", "Pick a saved config first")
+                return
+            end
+            local ok, err = Library:LoadConfig(name)
+            report(ok, "Config loaded", ok and ("Loaded " .. name) or err)
+        end,
+    })
+    box:Button({
+        Name = "Delete Config",
+        Callback = function()
+            local name = nameToUse()
+            if not name then
+                report(false, "Delete", "Pick a saved config first")
+                return
+            end
+            local ok, err = Library:DeleteConfig(name)
+            refreshConfigs()
+            if ok and pickedName() == name then
+                controls.ConfigList:Set(configNames[1] or "", true)
+            end
+            report(ok, "Config deleted", ok and ("Deleted " .. name) or err)
+        end,
+    })
+
+    local SCOPE_ACCOUNT, SCOPE_ALL = "This account only", "All accounts"
+    local startName, startScope = Library:GetAutoLoad()
+    local lastScope = startScope or "account"
+    local function chosenScope()
+        return controls.AutoScope:Get() == SCOPE_ALL and "all" or "account"
+    end
+    controls.AutoScope = box:Dropdown({
+        Name = "Auto Load For",
+        Options = { SCOPE_ACCOUNT, SCOPE_ALL },
+        Default = SCOPE_ACCOUNT,
+        Callback = function(value)
+            local scope = value == SCOPE_ALL and "all" or "account"
+            if controls.AutoLoad:Get() then
+                local name = nameToUse()
+                if name then
+                    Library:SetAutoLoad(nil, lastScope)
+                    Library:SetAutoLoad(name, scope)
+                end
+            end
+            lastScope = scope
+        end,
+    })
+    controls.AutoLoad = box:Toggle({
+        Name = "Auto Load",
+        Desc = "Loads the config when the script starts",
+        Callback = function(value)
+            if value then
+                local name = nameToUse()
+                if not name then
+                    report(false, "Auto load", "Pick a saved config first")
+                    controls.AutoLoad:Set(false, true)
+                    return
+                end
+                if not table.find(configNames, name) then
+                    report(false, "Auto load", "Save the config first")
+                    controls.AutoLoad:Set(false, true)
+                    return
+                end
+                local ok, err = Library:SetAutoLoad(name, chosenScope())
+                lastScope = chosenScope()
+                report(ok, "Auto load on", ok and (name .. " · " .. (lastScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT)) or err)
+            else
+                Library:SetAutoLoad(nil, lastScope)
+                report(true, "Auto load off", "Nothing loads by itself now")
+            end
+        end,
+    })
+    if startName then
+        if table.find(configNames, startName) then
+            controls.ConfigList:Set(startName, true)
+        end
+        controls.AutoScope:Set(startScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT, true)
+        controls.AutoLoad:Set(true, true)
+    end
+    if opts.AutoLoad ~= false then
+        self._autoLoad = true
+    end
+    return controls
+
+end
+
+-- Settings tab (universal): interface, script and configs. Every window gets it
+-- automatically unless the script built a tab called Settings of its own.
+-- Anti AFK is always on in every window that has this tab.
+function Window:_startAntiAfk()
+    if self._antiAfk then
+        return
+    end
+    self._antiAfk = true
+    local VirtualUser = game:GetService("VirtualUser")
+    -- Silence the game's own idle handlers when the executor can see them.
+    local silenced = {}
+    if type(getconnections) == "function" then
+        pcall(function()
+            for _, connection in ipairs(getconnections(player.Idled)) do
+                if connection.Disable then
+                    connection:Disable()
+                    table.insert(silenced, connection)
+                end
+            end
+        end)
+    end
+    local idle = player.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+    self:OnDestroy(function()
+        idle:Disconnect()
+        for _, connection in ipairs(silenced) do
+            pcall(function()
+                connection:Enable()
+            end)
+        end
+    end)
+end
+
+function Window:_buildSettings(opts)
+    opts = opts or {}
+    local window = self
+    local tab = self:Tab({ Name = "Settings", Icon = "settings", PageTitle = "Settings", Desc = "Manage the script" })
+
+    local interface = tab:Groupbox({ Name = "Interface", Side = "Left" })
+    interface:Keybind({
+        Name = "Menu Key",
+        Default = self.Keybind,
+        Flag = "Settings.MenuKey",
+        OnChanged = function(key)
+            if key then
+                window:SetKeybind(key)
+            end
+        end,
+    })
+    interface:Dropdown({
+        Name = "Theme",
+        Options = Library.ThemeOrder,
+        Default = Library.ThemeName,
+        Flag = "Settings.Theme",
+        Callback = function(name)
+            Library:SetTheme(name)
+        end,
+    })
+    interface:Slider({
+        Name = "Corner Radius",
+        Min = 0,
+        Max = 20,
+        Step = 1,
+        Suffix = "px",
+        Default = math.floor((Library.Roundness or 1) * 10 + 0.5),
+        Flag = "Settings.CornerRadius",
+        Callback = function(value)
+            Library:SetCornerRadius(value)
+        end,
+    })
+    interface:Slider({
+        Name = "UI Scale",
+        Min = 60,
+        Max = 140,
+        Step = 5,
+        Suffix = "%",
+        Default = 100,
+        Flag = "Settings.UIScale",
+        Callback = function(value)
+            window:SetUIScale(value / 100)
+        end,
+    })
+
+    local scriptBox = tab:Groupbox({ Name = "Script", Side = "Right" })
+    scriptBox:Label({ Text = "Anti AFK is always on. Press the menu key to hide or show the window." })
+    scriptBox:Button({
+        Name = "Unload",
+        Style = "Primary",
+        Callback = function()
+            window:Destroy()
+        end,
+    })
+    self:_startAntiAfk()
+
+    local configBox = tab:Groupbox({ Name = "Config", Side = "Right" })
+    self:_buildConfigBox(configBox, opts)
+    return tab
+end
+
 -- Builds the Misc tab. If anything in it fails, the error and its line are printed to
 -- the console and the window still opens with the tabs that were built.
 function Window:BuildMisc(opts)
@@ -6375,6 +6476,25 @@ function Window:BuildMisc(opts)
         self:Notify({ Title = "Misc tab", Content = "It failed to build, see the console", Type = "Error", Duration = 6 })
     end)
     return { Active = {}, Toggles = {}, Controls = {}, Features = {}, Set = function() end, Unload = function() end }
+end
+
+-- Builds the Settings tab. Errors are printed with their line and the window still opens.
+function Window:BuildSettings(opts)
+    if self._settingsBuilt then
+        return self._settingsTab
+    end
+    self._settingsBuilt = true
+    local ok, result = xpcall(function()
+        return self:_buildSettings(opts)
+    end, function(err)
+        return debug.traceback(tostring(err), 2)
+    end)
+    if ok then
+        self._settingsTab = result
+        return result
+    end
+    warn("[igkii] the Settings tab failed to build:\n" .. tostring(result))
+    return nil
 end
 
 return Library
