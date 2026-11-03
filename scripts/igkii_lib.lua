@@ -13,8 +13,8 @@
 --   window:BuildSettings() adds the universal Settings tab: menu key, theme, corner radius,
 --     UI scale, Unload, always-on Anti AFK and the Config box with auto load. Every window
 --     gets it by itself unless the script already has a tab called Settings.
---   Library:SaveConfig(name) / :LoadConfig(name) store Flag values under a per-experience
---     folder (igkii/configs/<universeId>/); auto-load and rejoin metadata are scoped too.
+--   Library:SaveConfig(name) / :LoadConfig(name) store Flag values under a game-named
+--     folder (igkii/configs/<place name>/); auto-load and rejoin metadata remain scoped.
 --   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
 -- The window opens by itself after the script finishes adding tabs (Window:PlayIntro()).
 -- Re-running a script that loads this library closes the previous window first, unless
@@ -796,13 +796,50 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Configs: every element created with a Flag can be saved and restored.
--- A config is a Lua file under igkii/configs/<universeId>/ that returns a table.
+-- A config is a Lua file under igkii/configs/<place name>/ that returns a table.
 -- Auto-load and rejoin metadata are isolated by experience as well.
 -- ---------------------------------------------------------------------------
 local SAVEABLE = { Toggle = true, Slider = true, Input = true, Dropdown = true, Keybind = true }
 local CONFIG_ROOT = "igkii"
 local GAME_SCOPE = tostring((game.GameId and game.GameId > 0) and game.GameId or game.PlaceId)
-local CONFIG_DIR = CONFIG_ROOT .. "/configs/" .. GAME_SCOPE
+
+-- Use the actual place title for the visible config directory (for example,
+-- "igkii/configs/+1 anime/"). Keep the fallback descriptive rather than exposing
+-- a PlaceId/GameId as the folder name. Invalid filesystem characters are replaced.
+local function safeFolderName(value)
+    local name = tostring(value or "")
+    name = name:gsub("[%c/\\:*?\"<>|]", " ")
+    name = name:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    name = name:gsub("[%. ]+$", "")
+    if name == "" then
+        return nil
+    end
+    if #name > 64 then
+        name = name:sub(1, 64):gsub("[%. ]+$", "")
+    end
+    local upper = name:upper()
+    if upper == "CON" or upper == "PRN" or upper == "AUX" or upper == "NUL"
+        or upper == "COM1" or upper == "COM2" or upper == "COM3" or upper == "COM4"
+        or upper == "COM5" or upper == "COM6" or upper == "COM7" or upper == "COM8" or upper == "COM9"
+        or upper == "LPT1" or upper == "LPT2" or upper == "LPT3" or upper == "LPT4"
+        or upper == "LPT5" or upper == "LPT6" or upper == "LPT7" or upper == "LPT8" or upper == "LPT9" then
+        name = "_" .. name
+    end
+    return name
+end
+
+local GAME_FOLDER_NAME = safeFolderName(game.Name) or "Current Game"
+do
+    local infoOk, placeInfo = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId)
+    end)
+    if infoOk and type(placeInfo) == "table" then
+        GAME_FOLDER_NAME = safeFolderName(placeInfo.Name) or GAME_FOLDER_NAME
+    end
+end
+
+local CONFIG_DIR = CONFIG_ROOT .. "/configs/" .. GAME_FOLDER_NAME
+local LEGACY_CONFIG_DIR = CONFIG_ROOT .. "/configs/" .. GAME_SCOPE
 local AUTOLOAD_DIR = CONFIG_ROOT .. "/autoload"
 local REJOIN_DIR = CONFIG_ROOT .. "/rejoin"
 local AUTOLOAD_PATH = AUTOLOAD_DIR .. "/" .. GAME_SCOPE .. ".lua"
@@ -839,6 +876,62 @@ local function ensureFolders(directory)
         end
     end
     return true
+end
+
+-- One-time migration from the previous numeric PlaceId/GameId folder. Existing
+-- configs are copied, not moved or deleted, so the old files remain as a backup.
+local legacyConfigMigrationChecked = false
+local function migrateLegacyConfigs()
+    if legacyConfigMigrationChecked then
+        return
+    end
+    legacyConfigMigrationChecked = true
+
+    if CONFIG_DIR == LEGACY_CONFIG_DIR
+        or type(isfolder) ~= "function"
+        or type(listfiles) ~= "function"
+        or type(readfile) ~= "function"
+        or type(writefile) ~= "function" then
+        return
+    end
+
+    local legacyCheckOk, legacyExists = pcall(isfolder, LEGACY_CONFIG_DIR)
+    if not (legacyCheckOk and legacyExists) then
+        return
+    end
+
+    local folderOk = ensureFolders(CONFIG_DIR)
+    if not folderOk then
+        return
+    end
+
+    local listOk, files = pcall(listfiles, LEGACY_CONFIG_DIR)
+    if not (listOk and type(files) == "table") then
+        return
+    end
+
+    for _, oldPath in ipairs(files) do
+        oldPath = tostring(oldPath)
+        local fileName = oldPath:match("([^/\\]+%.lua)$")
+        if fileName and fileName:sub(1, 1) ~= "_" then
+            local newPath = CONFIG_DIR .. "/" .. fileName
+            local targetExists = false
+            if type(isfile) == "function" then
+                local targetCheckOk, exists = pcall(isfile, newPath)
+                targetExists = targetCheckOk and exists == true
+            else
+                local targetReadOk = pcall(readfile, newPath)
+                targetExists = targetReadOk
+            end
+
+            if not targetExists then
+                local readOk, contents = pcall(readfile, oldPath)
+                if readOk and type(contents) == "string" then
+                    pcall(writefile, newPath, contents)
+                end
+            end
+        end
+    end
 end
 
 -- Turns a value into Lua source, or nil when it cannot be stored.
@@ -906,6 +999,7 @@ function Library:SaveConfig(name)
         end
     end
     table.insert(lines, "}")
+    migrateLegacyConfigs()
     local folderOk, folderError = ensureFolders(CONFIG_DIR)
     if not folderOk then
         return false, folderError
@@ -920,6 +1014,7 @@ function Library:LoadConfig(name)
     if not name then
         return false, "type a config name first"
     end
+    migrateLegacyConfigs()
     local path = CONFIG_DIR .. "/" .. name .. ".lua"
     if type(isfile) == "function" and not isfile(path) then
         return false, "no config named " .. name
@@ -943,6 +1038,7 @@ function Library:LoadConfig(name)
 end
 
 function Library:ListConfigs()
+    migrateLegacyConfigs()
     local names, seen = {}, {}
     if type(listfiles) ~= "function" then
         return names
@@ -980,6 +1076,7 @@ function Library:DeleteConfig(name)
     if type(delfile) ~= "function" then
         return false, "delfile is not available in this executor"
     end
+    migrateLegacyConfigs()
     local path = CONFIG_DIR .. "/" .. name .. ".lua"
     if type(isfile) == "function" and not isfile(path) then
         return false, "no config named " .. name
@@ -2071,12 +2168,13 @@ function Tab:Dropdown(opts)
     end
 
     local function open()
-        -- Keep the dropdown interactive even when its options list is empty.
-        -- This is useful for Saved Configs on a fresh experience: the value stays
-        -- visually blank, but the control retains the same dropdown interaction.
+        -- Close any other dropdown immediately. No fade/slide tweens are used here:
+        -- creating and destroying a lightweight popup is cheaper than animating a
+        -- CanvasGroup, shadow image, and multiple child objects every time it closes.
         if window._dropdown then
             window._dropdown()
         end
+
         local body = window.Body
         local scale = window.Scale.Scale
         local overlay = create("TextButton", {
@@ -2087,50 +2185,34 @@ function Tab:Dropdown(opts)
             ZIndex = 60,
             Parent = body,
         })
+
         local optionH = metrics.Option
         local rows = math.min(#options, 7)
-        -- An empty list opens as a small blank panel rather than disabling the
-        -- dropdown or displaying a synthetic "No configs" option.
+        -- An empty Saved Configs list remains completely blank but can still open.
         local height = (#options > 0)
             and (rows * optionH + math.max(rows - 1, 0) * 2 + 12)
             or (optionH + 12)
         local width = math.max(chip.AbsoluteSize.X / scale, 130)
         local abs = (chip.AbsolutePosition - body.AbsolutePosition) / scale
-        local x = math.clamp(abs.X + chip.AbsoluteSize.X / scale - width, 8, body.AbsoluteSize.X / scale - width - 8)
+        local bodyWidth = body.AbsoluteSize.X / scale
+        local bodyHeight = body.AbsoluteSize.Y / scale
+        local x = math.clamp(abs.X + chip.AbsoluteSize.X / scale - width, 8, math.max(8, bodyWidth - width - 8))
         local y = abs.Y + chip.AbsoluteSize.Y / scale + 6
-        local bodyH = body.AbsoluteSize.Y / scale
-        if y + height > bodyH - 8 then
+        if y + height > bodyHeight - 8 then
             y = math.max(abs.Y - height - 6, 8)
         end
+
         local popup = create("Frame", {
-            Position = UDim2.fromOffset(x, y - 4),
+            Position = UDim2.fromOffset(x, y),
             Size = UDim2.fromOffset(width, height),
-            BackgroundTransparency = 1,
+            BackgroundColor3 = Theme.Background,
+            BorderSizePixel = 0,
             ZIndex = 61,
             Parent = overlay,
         })
-        local shadow = create("ImageLabel", {
-            Position = UDim2.fromOffset(-18, -12),
-            Size = UDim2.new(1, 36, 1, 36),
-            BackgroundTransparency = 1,
-            Image = Assets.Shadow,
-            ImageColor3 = Color3.new(0, 0, 0),
-            ImageTransparency = 1,
-            ScaleType = Enum.ScaleType.Slice,
-            SliceCenter = Rect.new(49, 49, 450, 450),
-            ZIndex = 61,
-            Parent = popup,
-        })
-        local panel = create("CanvasGroup", {
-            Size = UDim2.fromScale(1, 1),
-            BackgroundColor3 = Theme.Background,
-            BorderSizePixel = 0,
-            GroupTransparency = 1,
-            ZIndex = 62,
-            Parent = popup,
-        })
-        corner(panel, UDim.new(0, 10))
-        stroke(panel, Theme.Stroke)
+        corner(popup, UDim.new(0, 9))
+        stroke(popup, Theme.Stroke)
+
         local list = create("ScrollingFrame", {
             Position = UDim2.fromOffset(6, 6),
             Size = UDim2.new(1, -12, 1, -12),
@@ -2142,21 +2224,26 @@ function Tab:Dropdown(opts)
             ScrollingDirection = Enum.ScrollingDirection.Y,
             AutomaticCanvasSize = Enum.AutomaticSize.Y,
             CanvasSize = UDim2.new(),
-            ZIndex = 63,
-            Parent = panel,
+            ZIndex = 62,
+            Parent = popup,
         })
-        create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2), Parent = list })
+        create("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 2),
+            Parent = list,
+        })
+
         for index, option in ipairs(options) do
             local selected = option == self_.Value
             local row = create("TextButton", {
                 Size = UDim2.new(1, 0, 0, optionH),
                 BackgroundColor3 = Theme.Surface3,
-                BackgroundTransparency = selected and 0.6 or 1,
+                BackgroundTransparency = selected and 0.58 or 1,
                 BorderSizePixel = 0,
                 Text = "",
                 AutoButtonColor = false,
                 LayoutOrder = index,
-                ZIndex = 64,
+                ZIndex = 63,
                 Parent = list,
             })
             corner(row, UDim.new(0, 6))
@@ -2166,7 +2253,7 @@ function Tab:Dropdown(opts)
                 Text = tostring(option),
                 TextSize = 13,
                 TextColor3 = selected and Theme.Accent or Theme.Text,
-                ZIndex = 65,
+                ZIndex = 64,
                 Parent = row,
             })
             if selected then
@@ -2176,19 +2263,21 @@ function Tab:Dropdown(opts)
                     Size = UDim2.fromOffset(6, 6),
                     BackgroundColor3 = Theme.Accent,
                     BorderSizePixel = 0,
-                    ZIndex = 65,
+                    ZIndex = 64,
                     Parent = row,
                 })
                 corner(dot, UDim.new(1, 0))
             end
+
+            -- Direct property changes avoid creating a Tween for every hover event.
             row.MouseEnter:Connect(function()
                 if not selected then
-                    tween(row, { BackgroundTransparency = 0.7 }, 0.1)
+                    row.BackgroundTransparency = 0.72
                 end
             end)
             row.MouseLeave:Connect(function()
                 if not selected then
-                    tween(row, { BackgroundTransparency = 1 }, 0.15)
+                    row.BackgroundTransparency = 1
                 end
             end)
             row.MouseButton1Click:Connect(function()
@@ -2203,35 +2292,37 @@ function Tab:Dropdown(opts)
         end
 
         local closed = false
-        popupClose = function()
+        local closePopup
+        closePopup = function()
             if closed then
                 return
             end
             closed = true
             self_.Open = false
-            popupClose = nil
-            window._dropdown = nil
-            tween(arrow, { Rotation = 90, TextColor3 = Theme.Muted }, 0.25, Enum.EasingStyle.Quint)
-            tween(chipStroke, { Color = Theme.Stroke }, 0.2)
-            tween(panel, { GroupTransparency = 1 }, 0.15)
-            tween(popup, { Position = UDim2.fromOffset(x, y - 4) }, 0.15)
-            tween(shadow, { ImageTransparency = 1 }, 0.15)
-            task.delay(0.17, function()
-                overlay:Destroy()
-            end)
-        end
-        window._dropdown = popupClose
-        overlay.MouseButton1Click:Connect(function()
-            if popupClose then
-                popupClose()
+            if popupClose == closePopup then
+                popupClose = nil
             end
-        end)
+            if window._dropdown == closePopup then
+                window._dropdown = nil
+            end
+
+            -- Instant close: no exit animation, no delayed Destroy, and no orphaned
+            -- popup lingering over the page for a few frames.
+            arrow.Rotation = 90
+            arrow.TextColor3 = Theme.Muted
+            chipStroke.Color = Theme.Stroke
+            if overlay and overlay.Parent then
+                overlay:Destroy()
+            end
+        end
+        popupClose = closePopup
+        window._dropdown = closePopup
+        overlay.MouseButton1Click:Connect(closePopup)
+
         self_.Open = true
-        tween(arrow, { Rotation = 270, TextColor3 = Theme.Accent }, 0.3, Enum.EasingStyle.Quint)
-        tween(chipStroke, { Color = Theme.StrokeHover }, 0.12)
-        tween(panel, { GroupTransparency = 0 }, 0.18)
-        tween(popup, { Position = UDim2.fromOffset(x, y) }, 0.25, Enum.EasingStyle.Quint)
-        tween(shadow, { ImageTransparency = 0.6 }, 0.25)
+        arrow.Rotation = 270
+        arrow.TextColor3 = Theme.Accent
+        chipStroke.Color = Theme.StrokeHover
     end
 
     frame.MouseButton1Click:Connect(function()
