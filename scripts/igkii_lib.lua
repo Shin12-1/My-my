@@ -2071,9 +2071,9 @@ function Tab:Dropdown(opts)
     end
 
     local function open()
-        if #options == 0 then
-            return
-        end
+        -- Keep the dropdown interactive even when its options list is empty.
+        -- This is useful for Saved Configs on a fresh experience: the value stays
+        -- visually blank, but the control retains the same dropdown interaction.
         if window._dropdown then
             window._dropdown()
         end
@@ -2089,7 +2089,11 @@ function Tab:Dropdown(opts)
         })
         local optionH = metrics.Option
         local rows = math.min(#options, 7)
-        local height = rows * optionH + math.max(rows - 1, 0) * 2 + 12
+        -- An empty list opens as a small blank panel rather than disabling the
+        -- dropdown or displaying a synthetic "No configs" option.
+        local height = (#options > 0)
+            and (rows * optionH + math.max(rows - 1, 0) * 2 + 12)
+            or (optionH + 12)
         local width = math.max(chip.AbsoluteSize.X / scale, 130)
         local abs = (chip.AbsolutePosition - body.AbsolutePosition) / scale
         local x = math.clamp(abs.X + chip.AbsoluteSize.X / scale - width, 8, body.AbsoluteSize.X / scale - width - 8)
@@ -6561,7 +6565,15 @@ function Window:_buildSettings(opts)
         Name = "Unload",
         Style = "Primary",
         Callback = function()
-            window:Destroy()
+            window:Confirm({
+                Title = "Unload interface?",
+                Content = "Are you sure you want to unload this interface? This will close the UI and stop its running features.",
+                CancelText = "Cancel",
+                ConfirmText = "Unload",
+                Callback = function()
+                    window:Destroy()
+                end,
+            })
         end,
     })
     self:_startAntiAfk()
