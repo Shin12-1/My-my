@@ -13,8 +13,8 @@
 --   window:BuildSettings() adds the universal Settings tab: menu key, theme, corner radius,
 --     UI scale, Unload, always-on Anti AFK and the Config box with auto load. Every window
 --     gets it by itself unless the script already has a tab called Settings.
---   Library:SaveConfig(name) / :LoadConfig(name) store every element that has a Flag as a
---     Lua file (igkii/configs/name.lua); :SetAutoLoad(name, "account"|"all") picks auto load
+--   Library:SaveConfig(name) / :LoadConfig(name) store Flag values under a per-experience
+--     folder (igkii/configs/<universeId>/); auto-load and rejoin metadata are scoped too.
 --   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
 -- The window opens by itself after the script finishes adding tabs (Window:PlayIntro()).
 -- Re-running a script that loads this library closes the previous window first, unless
@@ -647,6 +647,79 @@ function Library._healthColor(value, good, bad, lowerIsBetter)
     return value >= good and Theme.Success or value >= bad and Theme.Warning or Theme.Error
 end
 
+
+-- One sampler feeds every performance display so the Home card and floating
+-- counter always use the same frame-rate and ping measurements.
+local performanceMetrics = { FPS = 0, PingMs = nil }
+local performanceConsumers = 0
+local performanceConnection
+local performanceFrames, performanceElapsed = 0, 0
+local lastPingSample = 0
+
+local function readPingMilliseconds()
+    local ok, value = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    value = ok and tonumber(value) or nil
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        local fallbackOk, fallback = pcall(function()
+            return player:GetNetworkPing() * 1000
+        end)
+        value = fallbackOk and tonumber(fallback) or nil
+    end
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        return nil
+    end
+    return math.max(0, math.floor(value + 0.5))
+end
+
+local function startPerformanceSampler()
+    if performanceConnection then
+        return
+    end
+    performanceFrames, performanceElapsed = 0, 0
+    lastPingSample = 0
+    performanceConnection = RunService.RenderStepped:Connect(function(dt)
+        performanceFrames += 1
+        performanceElapsed += math.max(tonumber(dt) or 0, 0)
+
+        if performanceElapsed >= 0.5 then
+            performanceMetrics.FPS = math.floor(performanceFrames / performanceElapsed + 0.5)
+            performanceFrames, performanceElapsed = 0, 0
+        end
+
+        local now = os.clock()
+        if now - lastPingSample >= 0.5 then
+            performanceMetrics.PingMs = readPingMilliseconds()
+            lastPingSample = now
+        end
+    end)
+    performanceMetrics.PingMs = readPingMilliseconds()
+end
+
+local function acquirePerformanceMetrics()
+    performanceConsumers += 1
+    startPerformanceSampler()
+    local released = false
+    return function()
+        if released then
+            return
+        end
+        released = true
+        performanceConsumers = math.max(0, performanceConsumers - 1)
+        if performanceConsumers == 0 and performanceConnection then
+            performanceConnection:Disconnect()
+            performanceConnection = nil
+            performanceFrames, performanceElapsed = 0, 0
+            lastPingSample = 0
+        end
+    end
+end
+
+local function getPerformanceMetrics()
+    return performanceMetrics.FPS, performanceMetrics.PingMs
+end
+
 local function mountParent()
     local ok, hui = pcall(function()
         return typeof(gethui) == "function" and gethui() or nil
@@ -723,13 +796,17 @@ end
 
 -- ---------------------------------------------------------------------------
 -- Configs: every element created with a Flag can be saved and restored.
--- A config is a Lua file (igkii/configs/<name>.lua) that returns a table.
--- Auto load lives in igkii/autoload.lua, for one account or for every account.
+-- A config is a Lua file under igkii/configs/<universeId>/ that returns a table.
+-- Auto-load and rejoin metadata are isolated by experience as well.
 -- ---------------------------------------------------------------------------
 local SAVEABLE = { Toggle = true, Slider = true, Input = true, Dropdown = true, Keybind = true }
-local CONFIG_DIR = "igkii/configs"
-local AUTOLOAD_PATH = "igkii/autoload.lua"
-local REJOIN_PATH = "igkii/rejoin.lua"
+local CONFIG_ROOT = "igkii"
+local GAME_SCOPE = tostring((game.GameId and game.GameId > 0) and game.GameId or game.PlaceId)
+local CONFIG_DIR = CONFIG_ROOT .. "/configs/" .. GAME_SCOPE
+local AUTOLOAD_DIR = CONFIG_ROOT .. "/autoload"
+local REJOIN_DIR = CONFIG_ROOT .. "/rejoin"
+local AUTOLOAD_PATH = AUTOLOAD_DIR .. "/" .. GAME_SCOPE .. ".lua"
+local REJOIN_PATH = REJOIN_DIR .. "/" .. GAME_SCOPE .. ".lua"
 
 local function safeName(name)
     name = tostring(name or ""):gsub("[^%w_%- ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -739,15 +816,29 @@ local function safeName(name)
     return name
 end
 
-local function ensureFolders()
+-- Create each path segment in order. This works even when the executor's
+-- makefolder implementation does not create missing parent directories.
+local function ensureFolders(directory)
     if type(makefolder) ~= "function" or type(isfolder) ~= "function" then
-        return
+        return false, "folder APIs are unavailable"
     end
-    for _, folder in ipairs({ "igkii", CONFIG_DIR }) do
-        if not isfolder(folder) then
-            pcall(makefolder, folder)
+
+    local current = ""
+    for segment in tostring(directory or ""):gmatch("[^/\\]+") do
+        current = current == "" and segment or (current .. "/" .. segment)
+        local checkOk, exists = pcall(isfolder, current)
+        if checkOk and exists then
+            continue
+        end
+
+        local makeOk, makeError = pcall(makefolder, current)
+        local verifyOk, created = pcall(isfolder, current)
+        if not (verifyOk and created) then
+            local reason = makeOk and "folder creation could not be verified" or tostring(makeError)
+            return false, reason .. ": " .. current
         end
     end
+    return true
 end
 
 -- Turns a value into Lua source, or nil when it cannot be stored.
@@ -815,8 +906,11 @@ function Library:SaveConfig(name)
         end
     end
     table.insert(lines, "}")
+    local folderOk, folderError = ensureFolders(CONFIG_DIR)
+    if not folderOk then
+        return false, folderError
+    end
     return pcall(function()
-        ensureFolders()
         writefile(CONFIG_DIR .. "/" .. name .. ".lua", table.concat(lines, "\n") .. "\n")
     end)
 end
@@ -849,13 +943,26 @@ function Library:LoadConfig(name)
 end
 
 function Library:ListConfigs()
-    local names = {}
-    if type(listfiles) == "function" then
-        local ok, files = pcall(listfiles, CONFIG_DIR)
-        if ok and type(files) == "table" then
-            for _, path in ipairs(files) do
-                local name = tostring(path):match("([^/\\]+)%.lua$")
-                if name and name:sub(1, 1) ~= "_" then
+    local names, seen = {}, {}
+    if type(listfiles) ~= "function" then
+        return names
+    end
+    local folderOk, exists = pcall(isfolder, CONFIG_DIR)
+    if folderOk and not exists then
+        return names
+    end
+    local ok, files = pcall(listfiles, CONFIG_DIR)
+    if ok and type(files) == "table" then
+        for _, path in ipairs(files) do
+            path = tostring(path)
+            local name = path:match("([^/\\]+)%.lua$")
+            if name and name:sub(1, 1) ~= "_" and not seen[name] then
+                local fileOk, isConfig = true, true
+                if type(isfile) == "function" then
+                    fileOk, isConfig = pcall(isfile, path)
+                end
+                if fileOk and isConfig then
+                    seen[name] = true
                     table.insert(names, name)
                 end
             end
@@ -919,8 +1026,11 @@ local function writeAutoLoad(data)
     end
     table.insert(lines, "    },")
     table.insert(lines, "}")
+    local folderOk, folderError = ensureFolders(AUTOLOAD_DIR)
+    if not folderOk then
+        return false, folderError
+    end
     return pcall(function()
-        ensureFolders()
         writefile(AUTOLOAD_PATH, table.concat(lines, "\n") .. "\n")
     end)
 end
@@ -965,8 +1075,11 @@ function Library:SetRejoinConfig(name)
     if type(writefile) ~= "function" then
         return false, "writefile is not available in this executor"
     end
+    local folderOk, folderError = ensureFolders(REJOIN_DIR)
+    if not folderOk then
+        return false, folderError
+    end
     return pcall(function()
-        ensureFolders()
         writefile(REJOIN_PATH, string.format("return {\n    config = %q,\n    account = %q,\n}\n", name, tostring(player.UserId)))
     end)
 end
@@ -1889,6 +2002,7 @@ function Tab:Dropdown(opts)
     local compact = metrics.Compact
     local options = opts.Options or {}
     local current = opts.Default or options[1]
+    local emptyText = opts.EmptyText or ""
 
     local chip = create("Frame", {
         AnchorPoint = Vector2.new(1, 0.5),
@@ -1903,7 +2017,7 @@ function Tab:Dropdown(opts)
     local valueLabel = label({
         Position = UDim2.fromOffset(10, 0),
         Size = UDim2.new(1, -32, 1, 0),
-        Text = tostring(current or ""),
+        Text = tostring(current or emptyText),
         TextSize = compact and 13 or 14,
         FontFace = Fonts.Regular,
         Parent = chip,
@@ -1934,7 +2048,7 @@ function Tab:Dropdown(opts)
 
     local function setValue(value, silent)
         self_.Value = value
-        valueLabel.Text = tostring(value)
+        valueLabel.Text = (value == nil or value == "") and emptyText or tostring(value)
         if not silent then
             safeCall(opts.Callback, value)
         end
@@ -1957,6 +2071,9 @@ function Tab:Dropdown(opts)
     end
 
     local function open()
+        if #options == 0 then
+            return
+        end
         if window._dropdown then
             window._dropdown()
         end
@@ -2966,8 +3083,10 @@ function Library.Window(opts)
             if not consumed and not self._destroyed then
                 if self.Minimized then
                     self:Restore()
+                elseif self.Open then
+                    self:Minimize()
                 else
-                    self:Toggle(not self.Open)
+                    self:Toggle(true)
                 end
             end
         end)
@@ -4962,21 +5081,17 @@ function Window:BuildHome(features, figures, info)
     task.defer(fitSplit)
 
     -- Live refresh -----------------------------------------------------------
-    local frames = 0
-    self:_listen("Render", function()
-        frames += 1
-    end)
+    local releaseMetrics = acquirePerformanceMetrics()
+    self:OnDestroy(releaseMetrics)
     local started = os.clock()
     local function refresh()
-        fpsValue.Text = tostring(frames)
-        local fpsColor = Library._healthColor(frames, 50, 30)
+        local fps, ping = getPerformanceMetrics()
+        fps = fps or 0
+        fpsValue.Text = tostring(fps)
+        local fpsColor = Library._healthColor(fps, 50, 30)
         tween(fpsValue, { TextColor3 = fpsColor }, 0.3)
-        fpsPush(frames, fpsColor)
-        frames = 0
-        local ok, ping = pcall(function()
-            return math.floor(player:GetNetworkPing() * 1000)
-        end)
-        ping = ok and ping or 0
+        fpsPush(fps, fpsColor)
+        ping = ping or 0
         pingValue.Text = ping .. "ms"
         local pingColor = Library._healthColor(ping, 90, 180, true)
         tween(pingValue, { TextColor3 = pingColor }, 0.3)
@@ -5005,8 +5120,6 @@ function Window:BuildHome(features, figures, info)
             task.wait(1)
             if self.Open and self.Root.Visible and self.CurrentTab == tab then
                 refresh()
-            else
-                frames = 0
             end
         end
     end)
@@ -5726,24 +5839,21 @@ function Window:_buildMisc(opts)
         hold("stats", gui)
 
         local label, holder = statsLabel, statsHolder
-        local frames, elapsed = 0, 0
+        hold("stats", acquirePerformanceMetrics())
+        local refreshElapsed = 0
         hold("stats", RunService.Heartbeat:Connect(function(dt)
-            frames += 1
-            elapsed += dt
-            if elapsed < 0.5 then
+            refreshElapsed += dt
+            if refreshElapsed < 0.25 then
                 return
             end
-            local fps = math.floor(frames / elapsed + 0.5)
-            frames, elapsed = 0, 0
+            refreshElapsed = 0
+            local fps, ping = getPerformanceMetrics()
             local lines = {}
             if active.FpsCounter then
-                table.insert(lines, "FPS  " .. fps)
+                table.insert(lines, "FPS  " .. tostring(fps or 0))
             end
             if active.PingDisplay then
-                local ok, ping = pcall(function()
-                    return service("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-                end)
-                table.insert(lines, "Ping  " .. (ok and math.floor(ping + 0.5) or 0) .. " ms")
+                table.insert(lines, "Ping  " .. (ping and (tostring(ping) .. " ms") or "--"))
             end
             label.Text = table.concat(lines, "\n")
             holder.Size = UDim2.fromOffset(112, #lines * 18 + 12)
@@ -6252,6 +6362,7 @@ function Window:_buildConfigBox(box, opts)
         Name = "Saved Configs",
         Options = configNames,
         Default = configNames[1],
+        EmptyText = "No configs saved",
     })
     box:Button({
         Name = "Save Config",
