@@ -723,6 +723,7 @@ end
 local SAVEABLE = { Toggle = true, Slider = true, Input = true, Dropdown = true, Keybind = true }
 local CONFIG_DIR = "igkii/configs"
 local AUTOLOAD_PATH = "igkii/autoload.lua"
+local REJOIN_PATH = "igkii/rejoin.lua"
 
 local function safeName(name)
     name = tostring(name or ""):gsub("[^%w_%- ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -848,7 +849,7 @@ function Library:ListConfigs()
         if ok and type(files) == "table" then
             for _, path in ipairs(files) do
                 local name = tostring(path):match("([^/\\]+)%.lua$")
-                if name then
+                if name and name:sub(1, 1) ~= "_" then
                     table.insert(names, name)
                 end
             end
@@ -948,7 +949,33 @@ function Library:GetAutoLoad()
     return nil
 end
 
+-- Marks a config to load once, on this account, the next time a window starts. Auto
+-- Rejoin uses it to bring the settings back when nothing is set to auto load.
+function Library:SetRejoinConfig(name)
+    name = safeName(name)
+    if not name then
+        return false, "type a config name first"
+    end
+    if type(writefile) ~= "function" then
+        return false, "writefile is not available in this executor"
+    end
+    return pcall(function()
+        ensureFolders()
+        writefile(REJOIN_PATH, string.format("return {\n    config = %q,\n    account = %q,\n}\n", name, tostring(player.UserId)))
+    end)
+end
+
 function Library:RunAutoLoad()
+    if type(isfile) == "function" and isfile(REJOIN_PATH) then
+        local data = readLuaTable(REJOIN_PATH)
+        if type(delfile) == "function" then
+            pcall(delfile, REJOIN_PATH)
+        end
+        if data and type(data.config) == "string" and (data.account == nil or data.account == tostring(player.UserId)) then
+            local okRejoin, errRejoin = Library:LoadConfig(data.config)
+            return okRejoin, okRejoin and data.config or errRejoin, "rejoin"
+        end
+    end
     local name, scope = Library:GetAutoLoad()
     if not name then
         return false
@@ -2959,9 +2986,22 @@ function Library.Window(opts)
         end
         local loaded, detail
         if self._autoLoad then
-            loaded, detail = Library:RunAutoLoad()
+            local okAuto, autoLoaded, autoDetail = pcall(function()
+                return Library:RunAutoLoad()
+            end)
+            if okAuto then
+                loaded, detail = autoLoaded, autoDetail
+            else
+                warn("[igkii] auto load failed: " .. tostring(autoLoaded))
+            end
         end
-        self:PlayIntro()
+        local okIntro, introError = pcall(function()
+            self:PlayIntro()
+        end)
+        if not okIntro then
+            warn("[igkii] opening the window failed: " .. tostring(introError))
+            self.Root.Visible = true
+        end
         if loaded then
             self:Notify({ Title = "Config loaded", Content = tostring(detail) .. " was loaded automatically", Type = "Success", Duration = 3 })
         end
@@ -3184,7 +3224,7 @@ function Window:_buildSearch(content)
         Size = UDim2.new(1, icon and -28 or -4, 1, -2),
         BackgroundTransparency = 1,
         Text = "",
-        PlaceholderText = TOUCH and "Search controls..." or "Search controls · Ctrl+F",
+        PlaceholderText = "Search",
         PlaceholderColor3 = Theme.Muted,
         TextColor3 = Theme.Text,
         TextSize = 13,
@@ -4993,7 +5033,7 @@ function Library.MiscFeatures(getMisc)
     return list
 end
 
-function Window:BuildMisc(opts)
+function Window:_buildMisc(opts)
     opts = opts or {}
     local Workspace = game:GetService("Workspace")
     local StarterGui = game:GetService("StarterGui")
@@ -5236,9 +5276,15 @@ function Window:BuildMisc(opts)
     end
 
     -- Hide username ----------------------------------------------------------
-    -- Swaps your name for any text you type: in this UI, on your own overhead name
-    -- tag and (by hiding the player list) everywhere else on your screen. Other
-    -- players still see your real name, because that cannot be changed from here.
+    -- Swaps your name for any text you type: in this UI, on your own name tag and
+    -- in every text on your screen that shows it (player list, Esc menu list, chat,
+    -- the game's own UI). Other players still see your real name, because that
+    -- cannot be changed from here.
+    local nameFake = "Player"
+    local nameTouched = setmetatable({}, weakKeys)   -- label -> { orig, set }
+    local nameWatch = setmetatable({}, weakKeys)     -- label -> Text connection
+    local nameGeneration = 0
+
     local function fakeName()
         local text = trimmed(controls.FakeName and controls.FakeName:Get())
         if text == "" then
@@ -5247,23 +5293,124 @@ function Window:BuildMisc(opts)
         return text
     end
 
+    local function escapePattern(text)
+        return (text:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"))
+    end
+
+    -- Replaces every form of the real name in one pass. Markers stand in for the new
+    -- text while it is being built, so a fake name that contains the real name is never
+    -- replaced a second time.
+    local MARK_HANDLE, MARK_NAME = "\1h\1", "\1n\1"
+    local function swapNames(text, fake)
+        local result = text
+        for _, target in ipairs({
+            { "@" .. player.Name, MARK_HANDLE },
+            { player.Name, MARK_NAME },
+            { player.DisplayName, MARK_NAME },
+        }) do
+            local find = target[1]
+            if find ~= "" and result:find(find, 1, true) then
+                result = result:gsub(escapePattern(find), target[2])
+            end
+        end
+        if result == text then
+            return text
+        end
+        local plain = fake:gsub("%%", "%%%%")
+        local handle = ("@" .. fake):gsub("%%", "%%%%")
+        result = result:gsub(MARK_HANDLE, handle)
+        result = result:gsub(MARK_NAME, plain)
+        return result
+    end
+
+    local function scrub(label)
+        if not active.HideUsername or not (label:IsA("TextLabel") or label:IsA("TextButton")) then
+            return
+        end
+        if window.Gui and label:IsDescendantOf(window.Gui) then
+            return
+        end
+        local current = label.Text
+        local info = nameTouched[label]
+        if info and current == info.set then
+            return
+        end
+        local swapped = swapNames(current, nameFake)
+        if swapped ~= current then
+            nameTouched[label] = { orig = current, set = swapped }
+            label.Text = swapped
+            if not nameWatch[label] then
+                nameWatch[label] = label:GetPropertyChangedSignal("Text"):Connect(function()
+                    scrub(label)
+                end)
+            end
+        end
+    end
+
+    local function restoreNames()
+        for label, connection in pairs(nameWatch) do
+            connection:Disconnect()
+            nameWatch[label] = nil
+        end
+        for label, info in pairs(nameTouched) do
+            if label.Parent and label.Text == info.set then
+                label.Text = info.orig
+            end
+            nameTouched[label] = nil
+        end
+    end
+
+    local function nameRoots()
+        local roots = {}
+        pcall(function()
+            table.insert(roots, game:GetService("CoreGui"))
+        end)
+        local gui = player:FindFirstChildOfClass("PlayerGui")
+        if gui then
+            table.insert(roots, gui)
+        end
+        return roots
+    end
+
     appliers.HideUsername = function()
+        nameGeneration += 1
+        local generation = nameGeneration
+        clearBag("hidename")
+        restoreNames()
         local hum = humanoid()
         if active.HideUsername then
-            local fake = fakeName()
-            window._fakeNameChoice = fake
-            window:SetFakeName(fake)
+            nameFake = fakeName()
+            window._fakeNameChoice = nameFake
+            window:SetFakeName(nameFake)
             if hum then
                 if saved.humanoidName == nil then
                     saved.humanoidName = hum.DisplayName
                 end
-                hum.DisplayName = fake
+                hum.DisplayName = nameFake
             end
-            pcall(function()
-                if saved.playerList == nil then
-                    saved.playerList = StarterGui:GetCoreGuiEnabled(Enum.CoreGuiType.PlayerList)
+            for _, root in ipairs(nameRoots()) do
+                hold("hidename", root.DescendantAdded:Connect(scrub))
+            end
+            task.spawn(function()
+                while active.HideUsername and generation == nameGeneration do
+                    local count = 0
+                    for _, root in ipairs(nameRoots()) do
+                        local ok, list = pcall(root.GetDescendants, root)
+                        if ok then
+                            for _, instance in ipairs(list) do
+                                if generation ~= nameGeneration then
+                                    return
+                                end
+                                scrub(instance)
+                                count += 1
+                                if count % 1500 == 0 then
+                                    task.wait()
+                                end
+                            end
+                        end
+                    end
+                    task.wait(1.5)
                 end
-                StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
             end)
         else
             window:SetFakeName(nil)
@@ -5271,13 +5418,6 @@ function Window:BuildMisc(opts)
                 hum.DisplayName = saved.humanoidName
             end
             saved.humanoidName = nil
-            if saved.playerList ~= nil then
-                local wasEnabled = saved.playerList
-                saved.playerList = nil
-                pcall(function()
-                    StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, wasEnabled)
-                end)
-            end
         end
     end
 
@@ -5354,6 +5494,484 @@ function Window:BuildMisc(opts)
         end)
     end
 
+    -- Visual and performance helpers -----------------------------------------
+    local function service(name)
+        return game:GetService(name)
+    end
+
+    local function setProperty(object, property, value)
+        pcall(function()
+            object[property] = value
+        end)
+    end
+
+    -- Pins properties of one object (Lighting, Terrain) to new values, keeps them there
+    -- when the game changes them back, and puts the originals back on turn off.
+    local function pinProperties(key, getObject, values)
+        local original
+        return function()
+            clearBag(key)
+            local object = getObject()
+            if active[key] and object then
+                if not original then
+                    original = {}
+                    for property in pairs(values) do
+                        local ok, value = pcall(function()
+                            return object[property]
+                        end)
+                        if ok then
+                            original[property] = value
+                        end
+                    end
+                end
+                for property, value in pairs(values) do
+                    setProperty(object, property, value)
+                    pcall(function()
+                        hold(key, object:GetPropertyChangedSignal(property):Connect(function()
+                            local ok, current = pcall(function()
+                                return object[property]
+                            end)
+                            if active[key] and ok and current ~= value then
+                                setProperty(object, property, value)
+                            end
+                        end))
+                    end)
+                end
+            elseif original then
+                if object then
+                    for property, value in pairs(original) do
+                        setProperty(object, property, value)
+                    end
+                end
+                original = nil
+            end
+        end
+    end
+
+    -- Runs apply on every matching instance under the roots now and as new ones appear.
+    -- apply returns what undo needs to put the instance back on turn off.
+    local function trackInstances(key, getRoots, classes, apply, undo)
+        local originals = setmetatable({}, weakKeys)
+        local generation = 0
+        local function keep(instance, property, value)
+            hold(key, instance:GetPropertyChangedSignal(property):Connect(function()
+                if originals[instance] ~= nil and instance[property] ~= value then
+                    instance[property] = value
+                end
+            end))
+        end
+        local function handle(instance)
+            if originals[instance] ~= nil then
+                return
+            end
+            for _, class in ipairs(classes) do
+                if instance:IsA(class) then
+                    local ok, original = pcall(apply, instance, keep)
+                    if ok then
+                        originals[instance] = original or true
+                    end
+                    return
+                end
+            end
+        end
+        return function(on)
+            generation += 1
+            local mine = generation
+            clearBag(key)
+            if on then
+                local roots = getRoots()
+                for _, root in ipairs(roots) do
+                    hold(key, root.DescendantAdded:Connect(handle))
+                end
+                task.spawn(function()
+                    local count = 0
+                    for _, root in ipairs(roots) do
+                        for _, instance in ipairs(root:GetDescendants()) do
+                            if mine ~= generation then
+                                return
+                            end
+                            handle(instance)
+                            count += 1
+                            if count % 3000 == 0 then
+                                task.wait()
+                            end
+                        end
+                    end
+                end)
+            else
+                for instance, original in pairs(originals) do
+                    pcall(undo, instance, original)
+                    originals[instance] = nil
+                end
+            end
+        end
+    end
+
+    local function lighting()
+        return service("Lighting")
+    end
+
+    local function lightingRoots()
+        local roots = { lighting() }
+        if Workspace.CurrentCamera then
+            table.insert(roots, Workspace.CurrentCamera)
+        end
+        return roots
+    end
+
+    local function workspaceRoots()
+        return { Workspace }
+    end
+
+    -- Visual -------------------------------------------------------------------
+    appliers.FullBright = pinProperties("FullBright", lighting, {
+        Brightness = 2,
+        ClockTime = 14,
+        Ambient = Color3.fromRGB(178, 178, 178),
+        OutdoorAmbient = Color3.fromRGB(178, 178, 178),
+    })
+    appliers.NoFog = pinProperties("NoFog", lighting, { FogStart = 0, FogEnd = 1e9 })
+
+    local blurTracker = trackInstances("RemoveBlur", lightingRoots, { "BlurEffect", "DepthOfFieldEffect" }, function(instance, keep)
+        local original = { enabled = instance.Enabled }
+        instance.Enabled = false
+        keep(instance, "Enabled", false)
+        return original
+    end, function(instance, original)
+        instance.Enabled = original.enabled
+    end)
+    appliers.RemoveBlur = function()
+        blurTracker(active.RemoveBlur == true)
+    end
+
+    local bloomTracker = trackInstances("DisableBloom", lightingRoots, { "BloomEffect" }, function(instance, keep)
+        local original = { enabled = instance.Enabled }
+        instance.Enabled = false
+        keep(instance, "Enabled", false)
+        return original
+    end, function(instance, original)
+        instance.Enabled = original.enabled
+    end)
+    appliers.DisableBloom = function()
+        bloomTracker(active.DisableBloom == true)
+    end
+
+    local atmosphereTracker = trackInstances("DisableAtmosphere", lightingRoots, { "Atmosphere" }, function(instance, keep)
+        local original = { density = instance.Density, haze = instance.Haze, glare = instance.Glare }
+        instance.Density = 0
+        instance.Haze = 0
+        instance.Glare = 0
+        keep(instance, "Density", 0)
+        keep(instance, "Haze", 0)
+        keep(instance, "Glare", 0)
+        return original
+    end, function(instance, original)
+        instance.Density = original.density
+        instance.Haze = original.haze
+        instance.Glare = original.glare
+    end)
+    appliers.DisableAtmosphere = function()
+        atmosphereTracker(active.DisableAtmosphere == true)
+    end
+
+    -- Best effort and game specific: removes camera roll and the character camera
+    -- offset every frame. A game that moves the camera in its own way needs its own fix.
+    appliers.NoCameraShake = function()
+        clearBag("noshake")
+        local step = "igkiiNoCameraShake"
+        pcall(function()
+            RunService:UnbindFromRenderStep(step)
+        end)
+        if not active.NoCameraShake then
+            return
+        end
+        RunService:BindToRenderStep(step, Enum.RenderPriority.Camera.Value + 1, function()
+            local hum = humanoid()
+            if hum and hum.CameraOffset ~= Vector3.zero then
+                hum.CameraOffset = Vector3.zero
+            end
+            local cam = Workspace.CurrentCamera
+            if cam then
+                local position, look = cam.CFrame.Position, cam.CFrame.LookVector
+                if math.abs(look.Y) < 0.999 then
+                    cam.CFrame = CFrame.lookAt(position, position + look)
+                end
+            end
+        end)
+        hold("noshake", function()
+            pcall(function()
+                RunService:UnbindFromRenderStep(step)
+            end)
+        end)
+    end
+
+    -- Performance --------------------------------------------------------------
+    local statsLabel, statsHolder
+    local function refreshStats()
+        clearBag("stats")
+        if not active.FpsCounter and not active.PingDisplay then
+            return
+        end
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "igkiiStats"
+        gui.ResetOnSpawn = false
+        gui.IgnoreGuiInset = true
+        gui.DisplayOrder = 998
+        statsHolder = Instance.new("Frame")
+        statsHolder.Position = UDim2.fromOffset(12, 64)
+        statsHolder.Size = UDim2.fromOffset(112, 30)
+        statsHolder.BackgroundColor3 = Color3.fromRGB(10, 12, 10)
+        statsHolder.BackgroundTransparency = 0.25
+        statsHolder.BorderSizePixel = 0
+        statsHolder.Parent = gui
+        local holderCorner = Instance.new("UICorner")
+        holderCorner.CornerRadius = UDim.new(0, 8)
+        holderCorner.Parent = statsHolder
+        statsLabel = Instance.new("TextLabel")
+        statsLabel.Size = UDim2.fromScale(1, 1)
+        statsLabel.BackgroundTransparency = 1
+        statsLabel.Font = Enum.Font.GothamMedium
+        statsLabel.TextSize = 14
+        statsLabel.TextColor3 = Theme.Accent
+        statsLabel.Text = ""
+        statsLabel.Parent = statsHolder
+        local parent = (window.Gui and window.Gui.Parent) or player:FindFirstChildOfClass("PlayerGui")
+        gui.Parent = parent
+        hold("stats", gui)
+
+        local label, holder = statsLabel, statsHolder
+        local frames, elapsed = 0, 0
+        hold("stats", RunService.Heartbeat:Connect(function(dt)
+            frames += 1
+            elapsed += dt
+            if elapsed < 0.5 then
+                return
+            end
+            local fps = math.floor(frames / elapsed + 0.5)
+            frames, elapsed = 0, 0
+            local lines = {}
+            if active.FpsCounter then
+                table.insert(lines, "FPS  " .. fps)
+            end
+            if active.PingDisplay then
+                local ok, ping = pcall(function()
+                    return service("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+                end)
+                table.insert(lines, "Ping  " .. (ok and math.floor(ping + 0.5) or 0) .. " ms")
+            end
+            label.Text = table.concat(lines, "\n")
+            holder.Size = UDim2.fromOffset(112, #lines * 18 + 12)
+        end))
+    end
+    appliers.FpsCounter = refreshStats
+    appliers.PingDisplay = refreshStats
+
+    local TERRAIN_PROPERTIES = { "Decoration", "WaterWaveSize", "WaterWaveSpeed", "WaterReflectance" }
+    appliers.LowGraphics = function()
+        local terrain = Workspace:FindFirstChildOfClass("Terrain")
+        if active.LowGraphics then
+            if not saved.lowGraphics then
+                local original = {}
+                pcall(function()
+                    original.quality = settings().Rendering.QualityLevel
+                end)
+                if terrain then
+                    for _, property in ipairs(TERRAIN_PROPERTIES) do
+                        pcall(function()
+                            original[property] = terrain[property]
+                        end)
+                    end
+                end
+                saved.lowGraphics = original
+            end
+            pcall(function()
+                settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+            end)
+            if terrain then
+                setProperty(terrain, "Decoration", false)
+                setProperty(terrain, "WaterWaveSize", 0)
+                setProperty(terrain, "WaterWaveSpeed", 0)
+                setProperty(terrain, "WaterReflectance", 0)
+            end
+        elseif saved.lowGraphics then
+            local original = saved.lowGraphics
+            saved.lowGraphics = nil
+            if original.quality ~= nil then
+                pcall(function()
+                    settings().Rendering.QualityLevel = original.quality
+                end)
+            end
+            if terrain then
+                for _, property in ipairs(TERRAIN_PROPERTIES) do
+                    if original[property] ~= nil then
+                        setProperty(terrain, property, original[property])
+                    end
+                end
+            end
+        end
+    end
+
+    appliers.DisableShadows = pinProperties("DisableShadows", lighting, { GlobalShadows = false })
+
+    local particleTracker = trackInstances("ReduceParticles", workspaceRoots, { "ParticleEmitter", "Fire", "Smoke", "Sparkles", "Trail" }, function(instance)
+        if instance:IsA("ParticleEmitter") then
+            local rate = instance.Rate
+            instance.Rate = rate * 0.25
+            return { rate = rate }
+        end
+        local enabled = instance.Enabled
+        instance.Enabled = false
+        return { enabled = enabled }
+    end, function(instance, original)
+        if original.rate then
+            instance.Rate = original.rate
+        else
+            instance.Enabled = original.enabled
+        end
+    end)
+    appliers.ReduceParticles = function()
+        particleTracker(active.ReduceParticles == true)
+    end
+
+    local textureTracker = trackInstances("HideTextures", workspaceRoots, { "BasePart", "Decal", "SurfaceAppearance" }, function(instance)
+        if instance:IsA("BasePart") then
+            local original = { material = instance.Material, reflectance = instance.Reflectance }
+            instance.Material = Enum.Material.SmoothPlastic
+            instance.Reflectance = 0
+            if instance:IsA("MeshPart") then
+                local ok, id = pcall(function()
+                    return instance.TextureID
+                end)
+                if ok and id ~= "" then
+                    original.texture = id
+                    setProperty(instance, "TextureID", "")
+                end
+            end
+            return original
+        elseif instance:IsA("SurfaceAppearance") then
+            local original = { parent = instance.Parent, instance = instance }
+            instance.Parent = nil
+            return original
+        end
+        local original = { transparency = instance.Transparency }
+        instance.Transparency = 1
+        return original
+    end, function(instance, original)
+        if original.material then
+            instance.Material = original.material
+            instance.Reflectance = original.reflectance
+            if original.texture then
+                setProperty(instance, "TextureID", original.texture)
+            end
+        elseif original.parent then
+            instance.Parent = original.parent
+        else
+            instance.Transparency = original.transparency
+        end
+    end)
+    appliers.HideTextures = function()
+        textureTracker(active.HideTextures == true)
+    end
+
+    -- Uncaps the frame rate (the client stops at 240 by default). Needs setfpscap.
+    appliers.UncappedFps = function()
+        if active.UncappedFps then
+            if type(setfpscap) ~= "function" then
+                active.UncappedFps = false
+                window:Notify({ Title = "Uncapped FPS", Content = "This executor has no setfpscap", Type = "Warning", Duration = 3 })
+                pcall(function()
+                    toggles.UncappedFps:Set(false, true)
+                end)
+                return
+            end
+            if saved.fpsCap == nil then
+                local cap = type(getfpscap) == "function" and tonumber(getfpscap()) or nil
+                saved.fpsCap = (cap and cap > 0 and cap < 9999) and cap or 240
+            end
+            pcall(setfpscap, 9999)
+        elseif saved.fpsCap ~= nil then
+            if type(setfpscap) == "function" then
+                pcall(setfpscap, saved.fpsCap)
+            end
+            saved.fpsCap = nil
+        end
+    end
+
+    -- Auto rejoin ----------------------------------------------------------------
+    -- Rejoins when the game kicks or disconnects you. The loader is queued to run again
+    -- after the teleport, and the config that Auto Load uses is loaded by it. When
+    -- nothing is set to auto load, the current settings are carried over once.
+    appliers.AutoRejoin = function()
+        clearBag("rejoin")
+        if not active.AutoRejoin then
+            return
+        end
+        local CoreGui = service("CoreGui")
+        local GuiService = service("GuiService")
+        local TeleportService = service("TeleportService")
+        local env = (getgenv and getgenv()) or _G
+        local queue = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+
+        local running = false
+        local function rejoin()
+            if running then
+                return
+            end
+            running = true
+            task.spawn(function()
+                if not Library:GetAutoLoad() then
+                    local okSave = Library:SaveConfig("_rejoin")
+                    if okSave then
+                        Library:SetRejoinConfig("_rejoin")
+                    end
+                end
+                if type(queue) == "function" and type(env.IGKII_LOADER) == "string" then
+                    pcall(queue, env.IGKII_LOADER)
+                end
+                for attempt = 1, 6 do
+                    pcall(function()
+                        if attempt == 1 then
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+                        else
+                            TeleportService:Teleport(game.PlaceId, player)
+                        end
+                    end)
+                    task.wait(8)
+                end
+                running = false
+            end)
+        end
+
+        local function onPrompt(child)
+            if child.Name == "ErrorPrompt" then
+                rejoin()
+            end
+        end
+        task.spawn(function()
+            local ok, overlay = pcall(function()
+                local prompts = CoreGui:WaitForChild("RobloxPromptGui", 10)
+                return prompts and prompts:WaitForChild("promptOverlay", 10)
+            end)
+            if ok and overlay and active.AutoRejoin then
+                hold("rejoin", overlay.ChildAdded:Connect(onPrompt))
+                for _, child in ipairs(overlay:GetChildren()) do
+                    onPrompt(child)
+                end
+            end
+        end)
+        hold("rejoin", GuiService.ErrorMessageChanged:Connect(function()
+            if (GuiService:GetErrorMessage() or "") ~= "" then
+                rejoin()
+            end
+        end))
+
+        if type(queue) ~= "function" or type(env.IGKII_LOADER) ~= "string" then
+            window:Notify({ Title = "Auto Rejoin", Content = "Put the loader in your autoexec folder so it runs again after rejoining", Type = "Warning", Duration = 5 })
+        elseif not Library:GetAutoLoad() then
+            window:Notify({ Title = "Auto Rejoin", Content = "Auto Load is off, so your current settings are carried over once", Duration = 4 })
+        end
+    end
+
     -- UI ---------------------------------------------------------------------
     local function setActive(name, value)
         active[name] = value == true
@@ -5362,6 +5980,17 @@ function Window:BuildMisc(opts)
             warn("[igkii] " .. name .. " failed: " .. tostring(err))
             window:Notify({ Title = name, Content = "Could not apply this in this game", Type = "Warning", Duration = 3 })
         end
+    end
+
+    local function featureToggle(box, name, title, description)
+        toggles[name] = box:Toggle({
+            Name = title,
+            Desc = description,
+            Flag = "Misc." .. name,
+            Callback = function(value)
+                setActive(name, value)
+            end,
+        })
     end
 
     local character = tab:Groupbox({ Name = "Character", Side = "Left" })
@@ -5416,11 +6045,6 @@ function Window:BuildMisc(opts)
         Default = 60,
         Flag = "Misc.FlySpeed",
     })
-    controls.FlyKey = character:Keybind({
-        Name = "Fly Toggle Key",
-        Desc = "Optional: click to bind a key",
-        Flag = "Misc.FlyKey",
-    })
     toggles.NoClip = character:Toggle({
         Name = "No Clip",
         Flag = "Misc.NoClip",
@@ -5428,16 +6052,19 @@ function Window:BuildMisc(opts)
             setActive("NoClip", value)
         end,
     })
-    controls.NoClipKey = character:Keybind({
-        Name = "No Clip Toggle Key",
-        Desc = "Optional: click to bind a key",
-        Flag = "Misc.NoClipKey",
-    })
+
+    local visual = tab:Groupbox({ Name = "Visual", Side = "Left" })
+    featureToggle(visual, "FullBright", "Full Bright", "Brightens dark areas at any time")
+    featureToggle(visual, "NoFog", "No Fog", "Clearer view across the map")
+    featureToggle(visual, "RemoveBlur", "Remove Blur", "Keeps the screen sharp and clear")
+    featureToggle(visual, "DisableBloom", "Disable Bloom", "Removes glow on bright objects")
+    featureToggle(visual, "DisableAtmosphere", "Disable Atmosphere", "A cleaner, less obstructed view")
+    featureToggle(visual, "NoCameraShake", "Disable Camera Shake", "A steadier camera (best effort)")
 
     local utility = tab:Groupbox({ Name = "Utility", Side = "Right" })
     toggles.HideUsername = utility:Toggle({
         Name = "Hide Username",
-        Desc = "Shows the fake name below instead",
+        Desc = "Replaces it everywhere on your screen",
         Flag = "Misc.HideUsername",
         Callback = function(value)
             setActive("HideUsername", value)
@@ -5471,6 +6098,43 @@ function Window:BuildMisc(opts)
         end,
     })
 
+    local performance = tab:Groupbox({ Name = "Performance", Side = "Right" })
+    featureToggle(performance, "FpsCounter", "FPS Counter", "Shows your frames per second")
+    featureToggle(performance, "PingDisplay", "Ping Display", "Shows latency in ms")
+    featureToggle(performance, "LowGraphics", "Low Graphics", "Lowers selected graphics settings")
+    featureToggle(performance, "DisableShadows", "Disable Shadows", "Less rendering work")
+    featureToggle(performance, "ReduceParticles", "Reduce Particle Effects", "Fewer particles on screen")
+    featureToggle(performance, "HideTextures", "Hide Textures", "Simpler surfaces, less detail")
+
+    -- Potato mode switches the performance features on together, and off again.
+    local POTATO_FEATURES = { "LowGraphics", "DisableShadows", "ReduceParticles", "HideTextures", "RemoveBlur", "DisableBloom", "DisableAtmosphere" }
+    local potatoTurnedOn = {}
+    toggles.PotatoMode = performance:Toggle({
+        Name = "Potato Graphics Mode",
+        Desc = "Lowest settings, best performance",
+        Flag = "Misc.PotatoMode",
+        Callback = function(value)
+            active.PotatoMode = value == true
+            if value then
+                for _, name in ipairs(POTATO_FEATURES) do
+                    if toggles[name] and not toggles[name]:Get() then
+                        potatoTurnedOn[name] = true
+                        toggles[name]:Set(true)
+                    end
+                end
+            else
+                for name in pairs(potatoTurnedOn) do
+                    potatoTurnedOn[name] = nil
+                    if toggles[name] then
+                        toggles[name]:Set(false)
+                    end
+                end
+            end
+        end,
+    })
+    featureToggle(performance, "UncappedFps", "Uncapped FPS", "Removes the 240 FPS limit")
+    featureToggle(performance, "AutoRejoin", "Auto Rejoin", "Rejoins and reloads your config")
+
     -- Config ---------------------------------------------------------------
     -- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for
     -- this account only or for every account.
@@ -5483,16 +6147,22 @@ function Window:BuildMisc(opts)
             table.insert(configNames, name)
         end
     end
-    local function configName()
-        local typed = trimmed(controls.ConfigName and controls.ConfigName:Get())
-        if typed ~= "" then
-            return typed
-        end
+    -- The name box is for saving under a new name. The Saved Configs list picks the
+    -- config that Load, Delete and Auto Load use. Neither one changes the other.
+    local function typedName()
+        local text = trimmed(controls.ConfigName and controls.ConfigName:Get())
+        return text ~= "" and text or nil
+    end
+    local function pickedName()
         local picked = controls.ConfigList and controls.ConfigList:Get()
-        if picked and trimmed(picked) ~= "" then
-            return trimmed(picked)
-        end
-        return nil
+        picked = picked and trimmed(picked) or ""
+        return picked ~= "" and picked or nil
+    end
+    local function nameToSave()
+        return typedName() or pickedName()
+    end
+    local function nameToUse()
+        return pickedName() or typedName()
     end
     local function report(ok, title, detail)
         window:Notify({
@@ -5512,31 +6182,29 @@ function Window:BuildMisc(opts)
         Name = "Saved Configs",
         Options = configNames,
         Default = configNames[1],
-        Callback = function(value)
-            if value then
-                controls.ConfigName:Set(value)
-            end
-        end,
     })
     configBox:Button({
         Name = "Save Config",
         Callback = function()
-            local name = configName()
+            local name = nameToSave()
             if not name then
                 report(false, "Save", "Type a config name first")
                 return
             end
             local ok, err = Library:SaveConfig(name)
             refreshConfigs()
+            if ok and table.find(configNames, name) then
+                controls.ConfigList:Set(name, true)
+            end
             report(ok, "Config saved", ok and ("Saved as " .. name) or err)
         end,
     })
     configBox:Button({
         Name = "Load Config",
         Callback = function()
-            local name = configName()
+            local name = nameToUse()
             if not name then
-                report(false, "Load", "Type or pick a config name first")
+                report(false, "Load", "Pick a saved config first")
                 return
             end
             local ok, err = Library:LoadConfig(name)
@@ -5546,13 +6214,16 @@ function Window:BuildMisc(opts)
     configBox:Button({
         Name = "Delete Config",
         Callback = function()
-            local name = configName()
+            local name = nameToUse()
             if not name then
-                report(false, "Delete", "Type or pick a config name first")
+                report(false, "Delete", "Pick a saved config first")
                 return
             end
             local ok, err = Library:DeleteConfig(name)
             refreshConfigs()
+            if ok and pickedName() == name then
+                controls.ConfigList:Set(configNames[1] or "", true)
+            end
             report(ok, "Config deleted", ok and ("Deleted " .. name) or err)
         end,
     })
@@ -5570,7 +6241,7 @@ function Window:BuildMisc(opts)
         Callback = function(value)
             local scope = value == SCOPE_ALL and "all" or "account"
             if controls.AutoLoad:Get() then
-                local name = configName()
+                local name = nameToUse()
                 if name then
                     Library:SetAutoLoad(nil, lastScope)
                     Library:SetAutoLoad(name, scope)
@@ -5584,9 +6255,9 @@ function Window:BuildMisc(opts)
         Desc = "Loads the config when the script starts",
         Callback = function(value)
             if value then
-                local name = configName()
+                local name = nameToUse()
                 if not name then
-                    report(false, "Auto load", "Type or pick a config name first")
+                    report(false, "Auto load", "Pick a saved config first")
                     controls.AutoLoad:Set(false, true)
                     return
                 end
@@ -5605,38 +6276,15 @@ function Window:BuildMisc(opts)
         end,
     })
     if startName then
-        controls.ConfigName:Set(startName)
+        if table.find(configNames, startName) then
+            controls.ConfigList:Set(startName, true)
+        end
         controls.AutoScope:Set(startScope == "all" and SCOPE_ALL or SCOPE_ACCOUNT, true)
         controls.AutoLoad:Set(true, true)
     end
     if opts.AutoLoad ~= false then
         self._autoLoad = true
     end
-
-    -- Hotkeys. Ignored only while a text box is being typed in; a key that was just
-    -- used to rebind a Keybind is skipped so the rebind press does not flip the feature.
-    hold("core", UserInputService.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.Keyboard then
-            return
-        end
-        if UserInputService:GetFocusedTextBox() then
-            return
-        end
-        local code = input.KeyCode
-        task.defer(function()
-            if window._destroyed then
-                return
-            end
-            if window._consumedKey == code and os.clock() - (window._consumedAt or 0) < 0.25 then
-                return
-            end
-            if code == controls.FlyKey:Get() then
-                toggles.Fly:Set(not toggles.Fly:Get())
-            elseif code == controls.NoClipKey:Get() then
-                toggles.NoClip:Set(not toggles.NoClip:Get())
-            end
-        end)
-    end))
 
     -- After a respawn the character-bound features are applied to the new body.
     local CHARACTER_FEATURES = { "GodMode", "Speed", "Fly", "HideUsername" }
@@ -5655,16 +6303,25 @@ function Window:BuildMisc(opts)
         end
     end))
 
-    local ORDER = { "Fly", "NoClip", "Speed", "GodMode", "InfiniteJump", "HideUsername", "AntiAFK", "InstantPrompts" }
+    local ORDER = {
+        "Fly", "NoClip", "Speed", "GodMode", "InfiniteJump", "HideUsername", "AntiAFK", "InstantPrompts",
+        "FullBright", "NoFog", "RemoveBlur", "DisableBloom", "DisableAtmosphere", "NoCameraShake",
+        "FpsCounter", "PingDisplay", "LowGraphics", "DisableShadows", "ReduceParticles", "HideTextures",
+        "UncappedFps", "AutoRejoin",
+    }
     local function unload(final)
         for _, name in ipairs(ORDER) do
             if active[name] then
                 active[name] = false
                 pcall(appliers[name])
             end
-            if toggles[name] and toggles[name].Get and toggles[name]:Get() then
+        end
+        active.PotatoMode = false
+        table.clear(potatoTurnedOn)
+        for _, toggle in pairs(toggles) do
+            if toggle.Get and toggle:Get() then
                 pcall(function()
-                    toggles[name]:Set(false, true)
+                    toggle:Set(false, true)
                 end)
             end
         end
@@ -5701,5 +6358,23 @@ function Window:BuildMisc(opts)
     return result
 end
 
+
+-- Builds the Misc tab. If anything in it fails, the error and its line are printed to
+-- the console and the window still opens with the tabs that were built.
+function Window:BuildMisc(opts)
+    local ok, result = xpcall(function()
+        return self:_buildMisc(opts)
+    end, function(err)
+        return debug.traceback(tostring(err), 2)
+    end)
+    if ok then
+        return result
+    end
+    warn("[igkii] the Misc tab failed to build:\n" .. tostring(result))
+    pcall(function()
+        self:Notify({ Title = "Misc tab", Content = "It failed to build, see the console", Type = "Error", Duration = 6 })
+    end)
+    return { Active = {}, Toggles = {}, Controls = {}, Features = {}, Set = function() end, Unload = function() end }
+end
 
 return Library
