@@ -6362,7 +6362,7 @@ function Window:_buildConfigBox(box, opts)
         Name = "Saved Configs",
         Options = configNames,
         Default = configNames[1],
-        EmptyText = "No configs saved",
+        EmptyText = "",
     })
     box:Button({
         Name = "Save Config",
