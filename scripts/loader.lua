@@ -7,6 +7,9 @@ local env = (getgenv and getgenv()) or _G
 
 local BASE = "https://igkii.kiantejero.workers.dev"   -- your Worker link, no slash at the end
 
+-- Auto Rejoin queues this line to run again after it rejoins the game.
+env.IGKII_LOADER = 'loadstring(game:HttpGet("' .. BASE .. '/scripts/loader.lua"))()'
+
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 -- Games that are not listed here get the universal script (Home + Misc).
 local routes = {
