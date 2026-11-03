@@ -1,26 +1,7 @@
--- ============================================================================
--- IGKII UI LIBRARY  |  design ported from BloxStrike (AirFlow)
--- Load it with:  local Library = loadstring(game:HttpGet(URL))()
--- Returns the Library table: Library.Window({...}) -> window
---   window:Tab / :BuildHome / :BuildMisc / :Notify / :Confirm / :OnDestroy / :Destroy
---   tab:Groupbox -> :Toggle :Slider :Input :Dropdown :Keybind :Button :Status :Label :Section
---   window:BuildMisc() adds a ready-made, universal Misc tab (all undone on Destroy):
---     Character: God Mode, Movement Speed, Infinite Jump, Fly, No Clip
---     Utility:   Hide Username (any fake name), Instant Prompts, Uncapped FPS, Auto Rejoin
---     Visual:    Full Bright, No Fog, Remove Blur, Disable Bloom/Atmosphere/Camera Shake,
---                FPS Counter, Ping Display
---     Performance: Low Graphics, Disable Shadows, Reduce Particles, Hide Textures, Potato mode
---   window:BuildSettings() adds the universal Settings tab: menu key, theme, corner radius,
---     UI scale, Unload, always-on Anti AFK and the Config box with auto load. Every window
---     gets it by itself unless the script already has a tab called Settings.
---   Library:SaveConfig(name) / :LoadConfig(name) store Flag values under a game-named
---     folder (igkii/configs/<place name>/); auto-load and rejoin metadata remain scoped.
---   Library:DestroyAll() closes every window (running the same cleanup as window:Destroy)
--- The window opens by itself after the script finishes adding tabs (Window:PlayIntro()).
--- Re-running a script that loads this library closes the previous window first, unless
--- getgenv().IGKII_ALLOW_MULTI = true.
--- Accessibility: Library:SetReducedMotion(true) or Library:SetMotionScale(0..1)
--- ============================================================================
+-- IGKII UI Library
+-- UI components, themes, configuration management, and window lifecycle.
+-- Config files are grouped by the current experience name.
+-- Public entry points: Library.Window, SaveConfig, LoadConfig, and DestroyAll.
 local Players            = game:GetService("Players")
 local TweenService       = game:GetService("TweenService")
 local RunService         = game:GetService("RunService")
@@ -36,16 +17,13 @@ while not player do
     player = Players.LocalPlayer
 end
 
--- ============================================================================
--- UI LIBRARY  (port of the BloxStrike "AirFlow" window design)
--- ============================================================================
+-- Library initialization
 local Library = {}
 Library.Version = "2.0"
 Library.Flags = {}
 Library.Windows = {}
 
--- A second execution would otherwise stack a second window (and a second copy of every
--- loop) on top of the first, so the previous library instance is closed cleanly.
+-- Close the previous instance before registering this one.
 do
     local okEnv, env = pcall(function()
         return getgenv()
@@ -61,13 +39,10 @@ do
     end
     env.__igkiiLibrary = Library
 end
--- One motion multiplier keeps the visual language consistent and lets callers
--- honour a player's reduced-motion preference without maintaining a second UI.
+-- Shared motion scale for consistent reduced-motion behavior.
 Library.MotionScale = 1
 
 Library.Theme = {
-    -- Premium graphite base with a restrained mint accent. The brighter
-    -- surfaces create clearer hierarchy without turning the UI into neon.
     Background  = Color3.fromRGB(10, 13, 16),
     Surface     = Color3.fromRGB(14, 19, 23),
     Surface2    = Color3.fromRGB(20, 27, 32),
@@ -84,7 +59,7 @@ Library.Theme = {
 }
 local Theme = Library.Theme
 
--- Order decides which key wins when two theme colours are identical.
+-- Theme key order resolves duplicate colors consistently.
 local THEME_KEYS = {
     "Accent", "AccentDark", "Background", "Surface", "Surface2", "Surface3",
     "Stroke", "StrokeHover", "Text", "Muted", "Warning", "Success", "Error",
@@ -139,9 +114,7 @@ Library.Assets = {
 }
 local Assets = Library.Assets
 
--- Icons: BloxStrike pulls the Lucide set through loadstring, which this executor
--- does not have. These few are plain asset ids; anything missing falls back to a
--- text glyph or simply hides, so nothing ever shows a broken image.
+-- Bundled icon assets include a fallback for unavailable icons.
 local ICONS = {
     house    = "rbxassetid://6031075931",
     home     = "rbxassetid://6031075931",
@@ -169,7 +142,7 @@ local Fonts = {
 
 local TOUCH = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
--- Design tokens. Keep all geometry in one place so the layout stays consistent.
+-- Shared layout and sizing constants.
 local WINDOW_WIDTH = 780
 local WINDOW_HEIGHT = 540
 local SIDEBAR_WIDTH = 196
@@ -196,10 +169,7 @@ local METRICS = {
     },
 }
 
--- ---------------------------------------------------------------------------
--- Theme bindings: every property painted with a theme colour is remembered by
--- key, so SetTheme repaints the whole UI live.
--- ---------------------------------------------------------------------------
+-- Theme bindings: tracked properties are repainted by SetTheme.
 local tweenInfoCache = {}
 local themeBindings, themeHooks, themeLookup, orphanMarks = {}, {}, {}, {}
 local bindingCount, sweepAt = 0, 4000
@@ -329,9 +299,7 @@ local function onTheme(owner, fn)
     fn()
 end
 
--- ---------------------------------------------------------------------------
 -- Core helpers
--- ---------------------------------------------------------------------------
 local function tween(object, props, duration, style, direction, raw)
     duration = (duration or 0.2) * Library.MotionScale
     if not raw then
@@ -393,7 +361,7 @@ local function create(className, props, children)
     return inst
 end
 
--- Corners in pixels follow the corner-radius setting.
+-- Apply the configured corner radius.
 Library.Roundness = 1
 Library._cornerBases = {}
 
@@ -455,7 +423,7 @@ local function safeCall(callback, ...)
     end
 end
 
--- An icon image, or nil when the name has no asset (callers then skip the slot).
+-- Resolve an icon asset, or return nil when unavailable.
 local function iconImage(parent, name, color, size, props)
     local asset = resolveIcon(name)
     if not asset then
@@ -487,9 +455,7 @@ local function usingTouch()
     return UserInputService:GetLastInputType() == Enum.UserInputType.Touch
 end
 
--- The mouse position in the window's own coordinate space. The offset between
--- the two spaces differs between clients, so it is measured when the pointer
--- crosses the window edge (where the right answer is known to be near the rect).
+-- Convert pointer coordinates into the window coordinate space.
 local pointerShift = Vector2.zero
 local function rectDistance(point, object)
     local pos, size = object.AbsolutePosition, object.AbsoluteSize
@@ -524,7 +490,7 @@ local function pointInside(point, object)
         and point.Y >= position.Y and point.Y <= position.Y + size.Y
 end
 
--- A press that turned into a scroll is not a tap.
+-- Ignore presses that become scrolling gestures.
 local function tapGuard(button, getScroller)
     local startCanvas
     button.InputBegan:Connect(function(input)
@@ -647,9 +613,7 @@ function Library._healthColor(value, good, bad, lowerIsBetter)
     return value >= good and Theme.Success or value >= bad and Theme.Warning or Theme.Error
 end
 
-
--- One sampler feeds every performance display so the Home card and floating
--- counter always use the same frame-rate and ping measurements.
+-- One sampler feeds every FPS and ping display.
 local performanceMetrics = { FPS = 0, PingMs = nil }
 local performanceConsumers = 0
 local performanceConnection
@@ -794,18 +758,14 @@ function Library:SetTheme(name, instant)
     return true
 end
 
--- ---------------------------------------------------------------------------
--- Configs: every element created with a Flag can be saved and restored.
--- A config is a Lua file under igkii/configs/<place name>/ that returns a table.
--- Auto-load and rejoin metadata are isolated by experience as well.
--- ---------------------------------------------------------------------------
+-- Configs
+-- Flag values are saved under igkii/configs/<place name>/.
+-- Auto-load and rejoin metadata are scoped to the experience.
 local SAVEABLE = { Toggle = true, Slider = true, Input = true, Dropdown = true, Keybind = true }
 local CONFIG_ROOT = "igkii"
 local GAME_SCOPE = tostring((game.GameId and game.GameId > 0) and game.GameId or game.PlaceId)
 
--- Use the actual place title for the visible config directory (for example,
--- "igkii/configs/+1 anime/"). Keep the fallback descriptive rather than exposing
--- a PlaceId/GameId as the folder name. Invalid filesystem characters are replaced.
+-- Use the place title for folder names; sanitize invalid path characters.
 local function safeFolderName(value)
     local name = tostring(value or "")
     name = name:gsub("[%c/\\:*?\"<>|]", " ")
@@ -853,8 +813,7 @@ local function safeName(name)
     return name
 end
 
--- Create each path segment in order. This works even when the executor's
--- makefolder implementation does not create missing parent directories.
+-- Create parent directories before creating the target folder.
 local function ensureFolders(directory)
     if type(makefolder) ~= "function" or type(isfolder) ~= "function" then
         return false, "folder APIs are unavailable"
@@ -878,8 +837,7 @@ local function ensureFolders(directory)
     return true
 end
 
--- One-time migration from the previous numeric PlaceId/GameId folder. Existing
--- configs are copied, not moved or deleted, so the old files remain as a backup.
+-- Migrate legacy numeric folders by copying files and keeping the originals.
 local legacyConfigMigrationChecked = false
 local function migrateLegacyConfigs()
     if legacyConfigMigrationChecked then
@@ -934,7 +892,7 @@ local function migrateLegacyConfigs()
     end
 end
 
--- Turns a value into Lua source, or nil when it cannot be stored.
+-- Serialize a value to Lua source, or return nil when unsupported.
 local function toLua(value)
     local kind = typeof(value)
     if kind == "boolean" then
@@ -952,7 +910,7 @@ local function toLua(value)
     return nil
 end
 
--- Reads a Lua file that returns a table, in a sandbox with nothing but Enum.
+-- Load a Lua table in a restricted environment.
 local function readLuaTable(path)
     if type(readfile) ~= "function" or type(loadstring) ~= "function" then
         return nil, "readfile or loadstring is not available in this executor"
@@ -1023,7 +981,7 @@ function Library:LoadConfig(name)
     if not data then
         return false, err
     end
-    -- Values first, toggles last, so a toggle sees the final slider and text values.
+    -- Apply values before toggles so dependent controls see final values.
     for pass = 1, 2 do
         for flag, value in pairs(data) do
             local element = Library.Flags[flag]
@@ -1132,7 +1090,7 @@ local function writeAutoLoad(data)
     end)
 end
 
--- scope "account" = this account only, "all" = every account. name nil turns it off.
+-- Scope is "account" or "all"; a nil name disables auto-load.
 function Library:SetAutoLoad(name, scope)
     if name ~= nil then
         name = safeName(name)
@@ -1149,7 +1107,7 @@ function Library:SetAutoLoad(name, scope)
     return writeAutoLoad(data)
 end
 
--- Returns the config name and its scope for this account (this account wins over all).
+-- Resolve the selected config and its scope.
 function Library:GetAutoLoad()
     local data = readAutoLoad()
     local own = data.accounts[tostring(player.UserId)]
@@ -1162,8 +1120,7 @@ function Library:GetAutoLoad()
     return nil
 end
 
--- Marks a config to load once, on this account, the next time a window starts. Auto
--- Rejoin uses it to bring the settings back when nothing is set to auto load.
+-- Queue a one-time config load for the next window start or rejoin.
 function Library:SetRejoinConfig(name)
     name = safeName(name)
     if not name then
@@ -1200,9 +1157,7 @@ function Library:RunAutoLoad()
     return ok, ok and name or err, scope
 end
 
--- ---------------------------------------------------------------------------
--- Elements (Tab = a page, or a groupbox when _groupbox is set)
--- ---------------------------------------------------------------------------
+-- Elements
 local Tab = {}
 Tab.__index = Tab
 
@@ -1358,7 +1313,7 @@ local function finishElement(tab, opts, element, frame, kind)
     return element
 end
 
--- A caps heading with a hairline running out to the edge.
+-- Section heading with a trailing divider.
 function Tab:Section(text)
     if type(text) == "table" then
         text = text.Name or text.Title or ""
@@ -1432,7 +1387,7 @@ function Tab:Label(opts)
     }, frame, "Label")
 end
 
--- A read-only row: name on the left, a live value on the right.
+-- Read-only label and value row.
 function Tab:Status(opts)
     opts = normalize(opts)
     local metrics = metricsOf(self)
@@ -1465,7 +1420,7 @@ function Tab:Status(opts)
     }, frame, "Status")
 end
 
--- Rows with a button box inside a groupbox, a full card button on a page.
+-- Button row used in groupboxes and pages.
 local function rowButton(tab, opts)
     local primary = opts.Style == "Primary"
     local boxHeight = TOUCH and 34 or 28
@@ -2090,7 +2045,7 @@ function Tab:Input(opts)
     }, frame, "Input")
 end
 
--- Dropdown: a value chip that opens a floating list over the window.
+-- Dropdown: compact value chip with a floating options list.
 function Tab:Dropdown(opts)
     local frame, frameStroke, titleLabel, descLabel
     opts, frame, frameStroke, titleLabel, descLabel = beginElement(self, opts, "TextButton", 170, "Dropdown")
@@ -2168,9 +2123,7 @@ function Tab:Dropdown(opts)
     end
 
     local function open()
-        -- Close any other dropdown immediately. No fade/slide tweens are used here:
-        -- creating and destroying a lightweight popup is cheaper than animating a
-        -- CanvasGroup, shadow image, and multiple child objects every time it closes.
+        -- Close other dropdowns immediately; avoid popup exit animations.
         if window._dropdown then
             window._dropdown()
         end
@@ -2188,7 +2141,7 @@ function Tab:Dropdown(opts)
 
         local optionH = metrics.Option
         local rows = math.min(#options, 7)
-        -- An empty Saved Configs list remains completely blank but can still open.
+        -- Keep an empty Saved Configs list blank while allowing it to open.
         local height = (#options > 0)
             and (rows * optionH + math.max(rows - 1, 0) * 2 + 12)
             or (optionH + 12)
@@ -2269,7 +2222,7 @@ function Tab:Dropdown(opts)
                 corner(dot, UDim.new(1, 0))
             end
 
-            -- Direct property changes avoid creating a Tween for every hover event.
+            -- Use direct property changes instead of hover tweens.
             row.MouseEnter:Connect(function()
                 if not selected then
                     row.BackgroundTransparency = 0.72
@@ -2306,8 +2259,7 @@ function Tab:Dropdown(opts)
                 window._dropdown = nil
             end
 
-            -- Instant close: no exit animation, no delayed Destroy, and no orphaned
-            -- popup lingering over the page for a few frames.
+            -- Close immediately without delayed destruction.
             arrow.Rotation = 90
             arrow.TextColor3 = Theme.Muted
             chipStroke.Color = Theme.Stroke
@@ -2433,9 +2385,7 @@ function Tab:Keybind(opts)
     return finishElement(self, opts, self_, frame, "Keybind")
 end
 
--- ---------------------------------------------------------------------------
 -- Containers
--- ---------------------------------------------------------------------------
 local function buildContainer(owner, parent, top)
     local list = create("ScrollingFrame", {
         Position = UDim2.fromOffset(0, top),
@@ -2701,9 +2651,7 @@ function Tab:Groupbox(opts)
     return group
 end
 
--- ---------------------------------------------------------------------------
 -- Window
--- ---------------------------------------------------------------------------
 local Window = {}
 Window.__index = Window
 
@@ -2746,7 +2694,7 @@ end
 
 function Window:_listen(kind, handler)
     table.insert(self._inputListeners[kind], handler)
-    -- The optional live dashboard only needs frame sampling while visible.
+    -- Sample performance only while the dashboard is visible.
     if kind == "Render" then
         self:_syncRenderConnection()
     end
@@ -2755,8 +2703,7 @@ end
 function Window:_fitToScreen()
     local view = self.Gui.AbsoluteSize
     local fit = math.min(1, (view.X * 0.96) / WINDOW_WIDTH, (view.Y * 0.94) / WINDOW_HEIGHT)
-    -- Permit a little more down-scaling on narrow mobile screens instead of
-    -- forcing the window past the viewport edges.
+    -- Allow additional down-scaling on narrow screens.
     self._fitScale = math.max(fit, 0.35)
     self.Scale.Scale = self._fitScale * self._userScale
     task.defer(function()
@@ -2823,7 +2770,7 @@ function Window:SetKeybind(keyCode)
     self.Keybind = keyCode
 end
 
--- Tooltip: shown after a short hover, holds an element's description.
+-- Tooltip shown after a short hover.
 function Window:_attachTooltip(frame, text)
     local hoverId = 0
     frame.MouseEnter:Connect(function()
@@ -2955,7 +2902,7 @@ function Library.Window(opts)
         calibratePointer(root)
     end)
 
-    -- Sidebar: a flush rail with one hairline against the content.
+    -- Sidebar rail.
     local sidebar = create("Frame", {
         Name = "Sidebar",
         Size = UDim2.new(0, SIDEBAR_WIDTH, 1, 0),
@@ -2990,7 +2937,7 @@ function Library.Window(opts)
         BackgroundTransparency = 1,
         Parent = sidebar,
     })
-    -- The header logo is the player's own avatar (headshot) instead of a fixed letter.
+    -- Use the player avatar in the header.
     local function logoMark(parent, size, position)
         local mark = create("ImageLabel", {
             AnchorPoint = Vector2.new(0, 0.5),
@@ -3095,7 +3042,7 @@ function Library.Window(opts)
         Visible = false, ZIndex = 3, Parent = content,
     })
 
-    -- Minimize: a bare glyph, muted at rest, full colour and slightly smaller on hover.
+    -- Minimize button hover state.
     local minimizeButton = create("TextButton", {
         AnchorPoint = Vector2.new(1, 0),
         Position = UDim2.new(1, -14, 0, 14),
@@ -3134,7 +3081,7 @@ function Library.Window(opts)
     end)
 
     self:_buildSearch(content)
-    -- Familiar search access without adding a permanent keyboard-help control.
+    -- Search access.
     self:_listen("Began", function(input, processed)
         if processed or not self.Open or input.UserInputType ~= Enum.UserInputType.Keyboard then
             return
@@ -3197,9 +3144,7 @@ function Library.Window(opts)
 
     self._introDone = false
     root.Visible = false
-    -- The window stays hidden until PlayIntro runs. Scripts used to have to call it
-    -- by hand; it now runs by itself once the script has finished adding its tabs
-    -- (PlayIntro only ever plays once, so a manual call is still harmless).
+    -- PlayIntro runs once after the tabs have been registered.
     task.defer(function()
         if self._destroyed then
             return
@@ -3240,7 +3185,7 @@ function Library.Window(opts)
     return self
 end
 
--- Dragging: press anywhere on the window that is not a control.
+-- Window dragging, excluding interactive controls.
 function Window:_enableDrag()
     local dragging, dragStart, startPos = false, nil, nil
     local root, gui = self.Root, self.Gui
@@ -3295,7 +3240,7 @@ function Window:_enableDrag()
     end)
 end
 
--- Profile card at the foot of the sidebar.
+-- Sidebar profile card.
 function Window:_setGameTitle(title)
     if type(title) == "string" and title ~= "" then
         self._gameTitle = title
@@ -3412,7 +3357,7 @@ function Window:_buildProfile(sidebar)
     cardFrame:SetAttribute("NoDrag", true)
 end
 
--- Search: icon and text on a thin baseline; results float under it.
+-- Search field and floating results.
 function Window:_buildSearch(content)
     local holder = create("Frame", {
         AnchorPoint = Vector2.new(1, 0),
@@ -3639,7 +3584,7 @@ function Window:_buildSearch(content)
     end
 end
 
--- Tabs ----------------------------------------------------------------------
+-- Tabs
 function Window:_indicatorY(tab)
     local stack = self._tabStack
     return (tab._button.AbsolutePosition.Y - stack.AbsolutePosition.Y) / self.Scale.Scale + stack.Position.Y.Offset
@@ -3724,8 +3669,7 @@ function Window:Tab(opts)
             TextColor3 = Theme.Muted,
             Parent = page,
         })
-        -- opts.NamePrefix marks a description that ends with the player's name, so a
-        -- fake name replaces it as well.
+        -- NamePrefix also replaces the player's name in matching descriptions.
         if opts.NamePrefix and self._nameLabels then
             table.insert(self._nameLabels, { descLabel, opts.NamePrefix .. player.DisplayName, opts.NamePrefix })
             if self._fakeName then
@@ -3871,12 +3815,12 @@ function Window:SelectTab(tab)
     end)
 end
 
--- Notifications ---------------------------------------------------------------
+-- Notifications
 function Window:Notify(opts)
     opts = normalize(opts)
     opts.Content = opts.Content or opts.Text
     local duration = opts.Duration or 4
-    -- Resolve this at display time so notifications follow live theme changes.
+    -- Resolve colors at display time to follow theme changes.
     local titleColor = notificationColor(opts.Type)
 
     self._notifyOrder += 1
@@ -4025,7 +3969,7 @@ function Window:Notify(opts)
     return { Dismiss = dismiss }
 end
 
--- Dialog / Confirm --------------------------------------------------------------
+-- Dialogs and confirmations
 function Window:Dialog(opts)
     opts = normalize(opts)
     if self._dialog then
@@ -4226,7 +4170,7 @@ function Window:Confirm(opts)
     })
 end
 
--- Show / hide / minimize -------------------------------------------------------
+-- Visibility and minimization
 function Window:Toggle(open)
     if self._destroyed then
         return
@@ -4449,7 +4393,7 @@ function Window:Restore()
     self:Toggle(true)
 end
 
--- Floating button for touch devices.
+-- Floating touch control.
 function Window:_createToggleButton()
     local size = 50
     local button = create("TextButton", {
@@ -4568,8 +4512,7 @@ function Window:PlayIntro()
     end
 end
 
--- Registers a cleanup that runs once when the window is destroyed (feature loops,
--- connections, anything a script started on the window's behalf).
+-- Register cleanup to run once when the window is destroyed.
 function Window:OnDestroy(callback)
     if type(callback) == "function" then
         table.insert(self._destroyHooks, callback)
@@ -4602,9 +4545,7 @@ function Window:Destroy()
     end
 end
 
--- ---------------------------------------------------------------------------
--- Home tab (banner, live performance card, server card, feature status)
--- ---------------------------------------------------------------------------
+-- Home tab
 local function panelCard(parent, height, order)
     local frame = create("Frame", {
         Size = UDim2.new(1, 0, 0, height),
@@ -4681,8 +4622,7 @@ local function homeToggleChip(parent, order, text, initial, callback)
         paint(0.2)
         safeCall(callback, on)
     end)
-    -- The second return repaints the chip without firing the callback, so other
-    -- code (the Misc tab) can keep it in sync.
+    -- Repaint the chip without firing its callback.
     return chip, function(value)
         value = value == true
         if value ~= on then
@@ -4692,8 +4632,7 @@ local function homeToggleChip(parent, order, text, initial, callback)
     end
 end
 
--- Replaces the player's name in every label the window shows it in with any text.
--- nil or an empty string restores the real name. Only this UI is changed.
+-- Replace the player name in this UI; nil or an empty string restores it.
 function Window:SetFakeName(fake)
     if type(fake) ~= "string" or (fake:gsub("%s", "")) == "" then
         fake = nil
@@ -4908,8 +4847,7 @@ function Window:Hop(order, pick, title)
     end)
 end
 
--- features: list of { Name, Get = function() -> bool }, figures: { { Title, Get } }
--- info (optional): { Tier = "text for the banner chip" }
+-- BuildHome input: feature getters, figures, and optional banner info.
 function Window:BuildHome(features, figures, info)
     local tab = self:Tab({
         Name = "Home",
@@ -4921,7 +4859,7 @@ function Window:BuildHome(features, figures, info)
     self.Home = tab
     local list = tab.List
 
-    -- Banner ---------------------------------------------------------------
+    -- Banner
     local banner = panelCard(list, 152, tab:_nextOrder())
     banner.ClipsDescendants = true
     local bannerAccent = create("Frame", {
@@ -5006,7 +4944,7 @@ function Window:BuildHome(features, figures, info)
         end
     end)
 
-    -- Performance card -----------------------------------------------------------
+    -- Performance card
     local stats = homeCard(list, tab:_nextOrder())
     homeCaption(stats, "Live performance", 0)
     local graphs = create("Frame", { Size = UDim2.new(1, 0, 0, 76), BackgroundTransparency = 1, LayoutOrder = 1, Parent = stats })
@@ -5040,7 +4978,7 @@ function Window:BuildHome(features, figures, info)
         extraValues[index] = { Value = homeFigure(figureHolder, 2 + index, figure.Title), Get = figure.Get }
     end
 
-    -- Server + features (stacked at the default width, side by side when wide) ---
+    -- Server and feature status layout
     local split = create("Frame", {
         Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y,
@@ -5175,7 +5113,7 @@ function Window:BuildHome(features, figures, info)
     split:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitSplit)
     task.defer(fitSplit)
 
-    -- Live refresh -----------------------------------------------------------
+    -- Live refresh
     local releaseMetrics = acquirePerformanceMetrics()
     self:OnDestroy(releaseMetrics)
     local started = os.clock()
@@ -5221,15 +5159,7 @@ function Window:BuildHome(features, figures, info)
     return tab
 end
 
-
--- ---------------------------------------------------------------------------
--- Misc tab: universal character tools (works in any game)
---   local misc = window:BuildMisc()
---   misc.Set("Fly", true)    -- names: GodMode Speed InfiniteJump NoClip Fly HideUsername InstantPrompts AutoRejoin ...
---   misc.Active.Fly          -- true while a feature is on
---   misc.Unload()            -- turn everything off (also runs when the window is destroyed)
---   window:BuildHome(Library.MiscFeatures(function() return misc end))  -- Home list of Misc states
--- ---------------------------------------------------------------------------
+-- Misc feature helpers
 Library.MiscFeatureList = {
     { "GodMode", "God Mode" },
     { "Speed", "Movement Speed" },
@@ -5241,8 +5171,7 @@ Library.MiscFeatureList = {
     { "AutoRejoin", "Auto Rejoin" },
 }
 
--- Builds the features list that window:BuildHome expects. getMisc is called lazily,
--- so Home can be created before the Misc tab exists (Home stays the first tab).
+-- Resolve the feature list lazily so the Home tab can be built first.
 function Library.MiscFeatures(getMisc)
     local list = {}
     for _, entry in ipairs(Library.MiscFeatureList) do
@@ -5281,8 +5210,7 @@ function Window:_buildMisc(opts)
     local controls = {}
     local weakKeys = { __mode = "k" }
 
-    -- A bag holds everything one feature started (connections, instances, undo
-    -- functions) so it can be torn down in a single call.
+    -- Track each feature resource for centralized cleanup.
     local function hold(name, item)
         local list = bags[name]
         if not list then
@@ -5332,9 +5260,7 @@ function Window:_buildMisc(opts)
         return tonumber(value) or fallback
     end
 
-    -- God mode ---------------------------------------------------------------
-    -- Client side: keeps Humanoid health pinned. It protects against damage the
-    -- game applies through the client, not against a server that sets health itself.
+    -- God mode
     appliers.GodMode = function()
         clearBag("god")
         local hum = humanoid()
@@ -5368,7 +5294,7 @@ function Window:_buildMisc(opts)
         end))
     end
 
-    -- Movement speed ---------------------------------------------------------
+    -- Movement speed
     appliers.Speed = function()
         clearBag("speed")
         local hum = humanoid()
@@ -5392,7 +5318,7 @@ function Window:_buildMisc(opts)
         end))
     end
 
-    -- Infinite jump ----------------------------------------------------------
+    -- Infinite jump
     appliers.InfiniteJump = function()
         clearBag("jump")
         if not active.InfiniteJump then
@@ -5406,7 +5332,7 @@ function Window:_buildMisc(opts)
         end))
     end
 
-    -- No clip ----------------------------------------------------------------
+    -- No clip
     local clipped = setmetatable({}, weakKeys)
     appliers.NoClip = function()
         clearBag("noclip")
@@ -5433,9 +5359,7 @@ function Window:_buildMisc(opts)
         end))
     end
 
-    -- Fly --------------------------------------------------------------------
-    -- Move with your normal controls; the camera direction decides up and down.
-    -- Space rises and Ctrl or Q descends (the jump button rises on mobile).
+    -- Fly
     local flyJumpUntil = 0
     appliers.Fly = function()
         clearBag("fly")
@@ -5500,11 +5424,7 @@ function Window:_buildMisc(opts)
         end))
     end
 
-    -- Hide username ----------------------------------------------------------
-    -- Swaps your name for any text you type: in this UI, on your own name tag and
-    -- in every text on your screen that shows it (player list, Esc menu list, chat,
-    -- the game's own UI). Other players still see your real name, because that
-    -- cannot be changed from here.
+    -- Hide username
     local nameFake = "Player"
     local nameTouched = setmetatable({}, weakKeys)   -- label -> { orig, set }
     local nameWatch = setmetatable({}, weakKeys)     -- label -> Text connection
@@ -5522,9 +5442,7 @@ function Window:_buildMisc(opts)
         return (text:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0"))
     end
 
-    -- Replaces every form of the real name in one pass. Markers stand in for the new
-    -- text while it is being built, so a fake name that contains the real name is never
-    -- replaced a second time.
+    -- Replace the real name once, avoiding repeated substitutions.
     local MARK_HANDLE, MARK_NAME = "\1h\1", "\1n\1"
     local function swapNames(text, fake)
         local result = text
@@ -5646,7 +5564,7 @@ function Window:_buildMisc(opts)
         end
     end
 
-    -- Instant prompts --------------------------------------------------------
+    -- Instant prompts
     local promptHold = setmetatable({}, weakKeys)
     local function makeInstant(prompt)
         if prompt:IsA("ProximityPrompt") and prompt.HoldDuration ~= 0 then
@@ -5688,7 +5606,7 @@ function Window:_buildMisc(opts)
         end)
     end
 
-    -- Visual and performance helpers -----------------------------------------
+    -- Visual and performance helpers
     local function service(name)
         return game:GetService(name)
     end
@@ -5699,8 +5617,7 @@ function Window:_buildMisc(opts)
         end)
     end
 
-    -- Pins properties of one object (Lighting, Terrain) to new values, keeps them there
-    -- when the game changes them back, and puts the originals back on turn off.
+    -- Track original property values and restore them when disabled.
     local function pinProperties(key, getObject, values)
         local original
         return function()
@@ -5742,8 +5659,7 @@ function Window:_buildMisc(opts)
         end
     end
 
-    -- Runs apply on every matching instance under the roots now and as new ones appear.
-    -- apply returns what undo needs to put the instance back on turn off.
+    -- Apply to existing and newly added instances; retain undo handlers.
     local function trackInstances(key, getRoots, classes, apply, undo)
         local originals = setmetatable({}, weakKeys)
         local generation = 0
@@ -5817,7 +5733,7 @@ function Window:_buildMisc(opts)
         return { Workspace }
     end
 
-    -- Visual -------------------------------------------------------------------
+    -- Visual options
     appliers.FullBright = pinProperties("FullBright", lighting, {
         Brightness = 2,
         ClockTime = 14,
@@ -5868,8 +5784,7 @@ function Window:_buildMisc(opts)
         atmosphereTracker(active.DisableAtmosphere == true)
     end
 
-    -- Best effort and game specific: removes camera roll and the character camera
-    -- offset every frame. A game that moves the camera in its own way needs its own fix.
+    -- Best-effort camera adjustment; game-specific camera systems may differ.
     appliers.NoCameraShake = function()
         clearBag("noshake")
         local step = "igkiiNoCameraShake"
@@ -5899,7 +5814,7 @@ function Window:_buildMisc(opts)
         end)
     end
 
-    -- Performance --------------------------------------------------------------
+    -- Performance options
     local statsLabel, statsHolder
     local function refreshStats()
         clearBag("stats")
@@ -6064,7 +5979,7 @@ function Window:_buildMisc(opts)
         textureTracker(active.HideTextures == true)
     end
 
-    -- Uncaps the frame rate (the client stops at 240 by default). Needs setfpscap.
+    -- Set the client FPS cap when the executor exposes setfpscap.
     appliers.UncappedFps = function()
         if active.UncappedFps then
             if type(setfpscap) ~= "function" then
@@ -6088,10 +6003,7 @@ function Window:_buildMisc(opts)
         end
     end
 
-    -- Auto rejoin ----------------------------------------------------------------
-    -- Rejoins when the game kicks or disconnects you. The loader is queued to run again
-    -- after the teleport, and the config that Auto Load uses is loaded by it. When
-    -- nothing is set to auto load, the current settings are carried over once.
+    -- Auto rejoin and restore the queued config after teleporting.
     appliers.AutoRejoin = function()
         clearBag("rejoin")
         if not active.AutoRejoin then
@@ -6163,7 +6075,7 @@ function Window:_buildMisc(opts)
         end
     end
 
-    -- UI ---------------------------------------------------------------------
+    -- UI options
     local function setActive(name, value)
         active[name] = value == true
         local ok, err = pcall(appliers[name])
@@ -6184,8 +6096,7 @@ function Window:_buildMisc(opts)
         })
     end
 
-    -- Layout: the left column is about you (Character, Utility) and the right column is
-    -- about the screen (Visual, Performance). Settings and configs live in Settings.
+    -- Layout: character and utility controls on the left; display controls on the right.
     local unload
 
     local character = tab:Groupbox({ Name = "Character", Side = "Left" })
@@ -6298,8 +6209,7 @@ function Window:_buildMisc(opts)
     featureToggle(performance, "ReduceParticles", "Reduce Particle Effects", "Fewer particles on screen")
     featureToggle(performance, "HideTextures", "Hide Textures", "Simpler surfaces, less detail")
 
-    -- Potato mode switches the performance features (and the blur, bloom and atmosphere
-    -- removal) on together, and off again. It only undoes what it turned on itself.
+    -- Potato mode toggles the performance options as a group.
     local POTATO_FEATURES = { "LowGraphics", "DisableShadows", "ReduceParticles", "HideTextures", "RemoveBlur", "DisableBloom", "DisableAtmosphere" }
     local potatoTurnedOn = {}
     toggles.PotatoMode = performance:Toggle({
@@ -6326,7 +6236,7 @@ function Window:_buildMisc(opts)
         end,
     })
 
-    -- After a respawn the character-bound features are applied to the new body.
+    -- Reapply character-bound options after respawn.
     local CHARACTER_FEATURES = { "GodMode", "Speed", "Fly", "HideUsername" }
     hold("core", player.CharacterAdded:Connect(function(char)
         saved.health, saved.walkSpeed, saved.platformStand, saved.humanoidName = nil, nil, nil, nil
@@ -6365,7 +6275,7 @@ function Window:_buildMisc(opts)
                 end)
             end
         end
-        -- The hotkey and respawn listeners stay until the window itself is destroyed.
+        -- Keep hotkey and respawn listeners until window cleanup.
         for name in pairs(table.clone(bags)) do
             if final == true or name ~= "core" then
                 clearBag(name)
@@ -6398,10 +6308,7 @@ function Window:_buildMisc(opts)
     return result
 end
 
-
--- The config box: save, load and delete configs, and pick what loads by itself.
--- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for this
--- account only or for every account. Used by the Settings tab.
+-- Config controls
 function Window:_buildConfigBox(box, opts)
     opts = opts or {}
     local window = self
@@ -6412,8 +6319,7 @@ function Window:_buildConfigBox(box, opts)
         return text
     end
 
-    -- Configs are Lua files (igkii/configs/<name>.lua). Auto load can be set for
-    -- this account only or for every account.
+    -- Refresh the config list before displaying it.
     local configNames = Library:ListConfigs()   -- the dropdown reads this table, so it is refreshed in place
     local function refreshConfigs()
         local fresh = Library:ListConfigs()
@@ -6422,8 +6328,7 @@ function Window:_buildConfigBox(box, opts)
             table.insert(configNames, name)
         end
     end
-    -- The name box is for saving under a new name. The Saved Configs list picks the
-    -- config that Load, Delete and Auto Load use. Neither one changes the other.
+    -- The name input saves new configs; the dropdown selects existing configs.
     local function typedName()
         local text = trimmed(controls.ConfigName and controls.ConfigName:Get())
         return text ~= "" and text or nil
@@ -6565,16 +6470,14 @@ function Window:_buildConfigBox(box, opts)
 
 end
 
--- Settings tab (universal): interface, script and configs. Every window gets it
--- automatically unless the script built a tab called Settings of its own.
--- Anti AFK is always on in every window that has this tab.
+-- Settings tab: interface, script, and config controls.
 function Window:_startAntiAfk()
     if self._antiAfk then
         return
     end
     self._antiAfk = true
     local VirtualUser = game:GetService("VirtualUser")
-    -- Silence the game's own idle handlers when the executor can see them.
+    -- Disable supported idle handlers.
     local silenced = {}
     if type(getconnections) == "function" then
         pcall(function()
@@ -6674,8 +6577,7 @@ function Window:_buildSettings(opts)
     return tab
 end
 
--- Builds the Misc tab. If anything in it fails, the error and its line are printed to
--- the console and the window still opens with the tabs that were built.
+-- Build the Misc tab; report errors without preventing the window from opening.
 function Window:BuildMisc(opts)
     local ok, result = xpcall(function()
         return self:_buildMisc(opts)
@@ -6692,7 +6594,7 @@ function Window:BuildMisc(opts)
     return { Active = {}, Toggles = {}, Controls = {}, Features = {}, Set = function() end, Unload = function() end }
 end
 
--- Builds the Settings tab. Errors are printed with their line and the window still opens.
+-- Build the Settings tab and report any setup errors.
 function Window:BuildSettings(opts)
     if self._settingsBuilt then
         return self._settingsTab
