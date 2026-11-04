@@ -23,7 +23,6 @@ local State = {
 }
 
 local conns, seen = {}, {}
-local firing = false
 local cleaned = false
 local Window
 getgenv().RAS_RUN = true -- must be set before the collect loop starts
@@ -59,6 +58,10 @@ local lastData = {
     PaidRandomAllowed = true,
 }
 
+-- tables that WE fired; the listener ignores them so it can never loop on itself
+local firedByUs = setmetatable({}, { __mode = "k" })
+local pending = false
+
 local function applyBoost(data)
     data.Luck = State.Luck
     data.Damage = State.Damage
@@ -72,33 +75,40 @@ local function applyBoost(data)
     data.Dps = State.Damage * 10
     data.RollTime = State.RollTime
     data.RollCost = 0
-    data.MaxAlive = 50
-    data.Slots = 10
-    data.DiamondChance = 1
     data.ServerLuck = { EndsAt = 0, Level = 0, Multiplier = State.Luck, Busy = false }
     return data
 end
 
-local function fireBoost(data)
-    firing = true
+local function fireBoost()
+    local data = applyBoost(table.clone(lastData))
+    firedByUs[data] = true
     pcall(function()
-        firesignal(DataUpdate.OnClientEvent, applyBoost(data))
+        firesignal(DataUpdate.OnClientEvent, data)
     end)
-    firing = false
 end
 
--- every time the server sends data, boost it again so it doesn't get overwritten
+-- at most one boost every 0.25s, however many events or slider ticks arrive
+local function scheduleBoost()
+    if pending or not State.Boost then return end
+    pending = true
+    task.delay(0.25, function()
+        pending = false
+        if State.Boost and getgenv().RAS_RUN then
+            fireBoost()
+        end
+    end)
+end
+
+-- real server updates: remember them, then boost again (never react to our own)
 table.insert(conns, DataUpdate.OnClientEvent:Connect(function(data)
-    if firing or type(data) ~= "table" then return end
+    if type(data) ~= "table" or firedByUs[data] then return end
     for k, v in pairs(data) do lastData[k] = v end
-    if State.Boost then
-        task.defer(fireBoost, table.clone(lastData))
-    end
+    scheduleBoost()
 end))
 
 local function setBoost(on)
     State.Boost = on and true or false
-    if State.Boost then fireBoost(table.clone(lastData)) end
+    if State.Boost then scheduleBoost() end
 end
 
 local function setCollect(on)
@@ -107,7 +117,7 @@ end
 
 local function setStat(key, value)
     State[key] = value
-    if State.Boost then fireBoost(table.clone(lastData)) end
+    scheduleBoost()
 end
 
 -------------------------------------------------------------------
@@ -167,8 +177,6 @@ end
 local Library = getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
 
 Window = Library.Window({ Title = "Roll a Sword" }) -- dot call, not colon
-
--- closing/destroying the window from anywhere also stops the script
 Window:OnDestroy(cleanup)
 
 local Main = Window:Tab({ Name = "Main", PageTitle = "Roll a Sword", Desc = "OP stats are client-side only" })
