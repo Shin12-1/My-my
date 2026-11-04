@@ -54,17 +54,24 @@ end)
 ----------------------------------------------------------------
 -- igkii LIB (loaded with loadstring)
 ----------------------------------------------------------------
-local LIB_URL = "PUT_YOUR_WORKER_LINK_HERE/igkii_lib.lua" -- same base link your loader uses
+local BASE = "https://igkii.kiantejero.workers.dev"
+local LIB_URLS = {
+    BASE .. "/scripts/igkii_lib.lua",
+    BASE .. "/igkii_lib.lua",
+}
 
 local Lib = getgenv().igkii_lib
 if not Lib then
-    local ok, res = pcall(function()
-        return loadstring(game:HttpGet(LIB_URL))()
-    end)
-    if ok then
-        Lib = res
-    else
-        warn("[SwordWarrior] could not load igkii_lib: " .. tostring(res))
+    for _, url in ipairs(LIB_URLS) do
+        local ok, res = pcall(function()
+            return loadstring(game:HttpGet(url))()
+        end)
+        if ok and res then
+            Lib = res
+            break
+        else
+            warn("[SwordWarrior] lib failed at " .. url .. ": " .. tostring(res))
+        end
     end
 end
 
@@ -121,8 +128,10 @@ addSlider("Click Delay (s)", 0.05, 0.5, State.ClickDelay, 0.01, function(v) Stat
 addToggle("Auto Rebirth", false, function(v) State.AutoRebirth = v end)
 addSlider("Rebirth Delay (s)", 0.5, 10, State.RebirthDelay, 0.5, function(v) State.RebirthDelay = v end)
 
-if not MainTab then
-    warn("[SwordWarrior] UI did not build, the lib method names differ. Check igkii_lib.lua.")
+if not Lib then
+    warn("[SwordWarrior] igkii_lib did not load from any link, check the file path on your Worker.")
+elseif not MainTab then
+    warn("[SwordWarrior] lib loaded but the UI did not build, the lib method names differ. Check igkii_lib.lua.")
 end
 
 ----------------------------------------------------------------
