@@ -153,7 +153,7 @@ end
 -------------------------------------------------------------------
 -- UI (igkii_lib, loaded separately)
 -------------------------------------------------------------------
-local Library = getgenv().igkii_lib or loadstring(game:HttpGet(LIB_URL))()
+local Library = getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
 local Window = Library:CreateWindow({ Title = "Roll a Sword" })
 getgenv().RAS_WINDOW = Window
 
