@@ -1,4 +1,4 @@
--- Auto Boost  |  clicks the Boost popup when it shows  |  igkii UI
+-- Auto Boost  |  clicks the Boost button when it shows  |  igkii UI
 local env = (getgenv and getgenv()) or _G
 local fetch = env.IGKII_FETCH
 if not fetch then
@@ -15,61 +15,67 @@ if not okLoad or type(Library) ~= "table" then
 end
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
 local pg = Players.LocalPlayer:WaitForChild("PlayerGui")
-local Train = RS:WaitForChild("Game"):WaitForChild("Remotes"):WaitForChild("Train")
+local Train = ReplicatedStorage:WaitForChild("Game")
+    :WaitForChild("Remotes")
+    :WaitForChild("Train")
+
+-- ============== CONFIG ==============
+local CLICK_DELAY = 0.02 -- time between clicks
+-- ====================================
 
 local state = { AutoBoost = false, Alive = true, Count = 0 }
-local lastFire = 0
 
 ------------------------------------------------------------------
--- Boost popup detection + click
+-- Clicker logic
 ------------------------------------------------------------------
-local function onScreen(obj)
-    local cur = obj
-    while cur and cur ~= pg do
-        if cur:IsA("GuiObject") and not cur.Visible then return false end
-        if cur:IsA("LayerCollector") and not cur.Enabled then return false end
-        cur = cur.Parent
+local function isShown(obj)
+    local p = obj
+    while p and p ~= pg do
+        if p:IsA("ScreenGui") and not p.Enabled then return false end
+        if p:IsA("GuiObject") and not p.Visible then return false end
+        p = p.Parent
     end
     return true
 end
 
-local function textOf(obj)
-    local t = ""
-    if obj:IsA("TextButton") then t = obj.Text end
-    for _, c in ipairs(obj:GetDescendants()) do
-        if c:IsA("TextLabel") or c:IsA("TextButton") then t = t .. " " .. c.Text end
-    end
-    return t:lower()
-end
-
-local function findBoostPopup()
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d:IsA("GuiButton") and textOf(d):find("boost") and onScreen(d) then
-            return d
-        end
-    end
-end
-
-local function fireBoost(btn)
-    if tick() - lastFire < 1 then return end
-    lastFire = tick()
-    state.Count += 1
-    Train:FireServer("Boost")
-    if firesignal then
-        pcall(function() firesignal(btn.Activated) end)
-        pcall(function() firesignal(btn.MouseButton1Click) end)
-    end
+local function getButton()
+    local tc = pg:FindFirstChild("TrainClick")
+    return tc and tc:FindFirstChild("Click")
 end
 
 task.spawn(function()
     while state.Alive do
         if state.AutoBoost then
-            local btn = findBoostPopup()
-            if btn then fireBoost(btn) end
+            local btn = getButton()
+            if btn and isShown(btn) then
+                local pos = btn.AbsolutePosition
+                local size = btn.AbsoluteSize
+                local x, y = pos.X + (size.X / 2), pos.Y + (size.Y / 2)
+
+                -- real mouse click on the boost button
+                pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+                    task.wait(0.005)
+                    VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+                end)
+
+                -- remote backup
+                pcall(function()
+                    Train:FireServer("Boost")
+                end)
+
+                state.Count += 1
+                task.wait(CLICK_DELAY)
+            else
+                task.wait(0.1)
+            end
+        else
+            task.wait(0.1)
         end
-        task.wait(0.2)
     end
 end)
 
@@ -91,14 +97,14 @@ table.insert(features, 1, {
 Window:BuildHome(features, {
     { Title = "Place ID", Get = function() return tostring(game.PlaceId) end },
     { Title = "Game ID", Get = function() return tostring(game.GameId) end },
-    { Title = "Boosts clicked", Get = function() return tostring(state.Count) end },
+    { Title = "Boost clicks", Get = function() return tostring(state.Count) end },
 }, { Tier = "Boost game" })
 
 local tab = Window:Tab({ Name = "Main", Icon = "star", PageTitle = "Main", Desc = "Auto boost" })
 tab:Section("Boost")
 tab:Toggle({
     Name = "Auto Boost",
-    Desc = "Clicks the boost the moment it pops up on screen",
+    Desc = "Clicks the boost button as soon as it shows on screen",
     Default = false,
     Callback = function(value)
         state.AutoBoost = value
