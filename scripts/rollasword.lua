@@ -14,6 +14,7 @@ end
 local RS = game:GetService("ReplicatedStorage")
 local Remotes = RS:WaitForChild("Remotes")
 local Collect = Remotes:WaitForChild("Collect")
+local BattleTick = Remotes:WaitForChild("BattleTick")
 
 local State = { AutoCollect = true }
 local conns, seen, queue = {}, {}, {}
@@ -21,56 +22,62 @@ local cleaned = false
 local Window, misc
 env.RAS_RUN = true -- set before the sender loop starts
 
+local COLLECT_DELAY = 0.35 -- wait a moment after a kill, like the game does
+local BATCH_SIZE = 10      -- ids per Collect call
+local SEND_EVERY = 0.25    -- seconds between Collect calls
+
 -------------------------------------------------------------------
--- AUTO COLLECT (every drop automatically, each id once, max 8/second)
+-- AUTO COLLECT (drops arrive in Remotes.BattleTick, killed.drops / kills[].drops)
 -------------------------------------------------------------------
-local function dropId(inst)
-    local n = tonumber(inst.Name)
-        or inst:GetAttribute("Id") or inst:GetAttribute("ID")
-        or inst:GetAttribute("DropId") or inst:GetAttribute("Drop")
-    n = tonumber(n)
-    if n and n >= 1 and n < 10000000 and n % 1 == 0 then
-        return n
+local function addDrop(id)
+    id = tonumber(id)
+    if not id or id < 1 or id % 1 ~= 0 or seen[id] then return end
+    seen[id] = true
+    queue[#queue + 1] = { id = id, at = os.clock() + COLLECT_DELAY }
+    task.delay(60, function() seen[id] = nil end) -- ids are never reused that fast
+end
+
+-- find every "drops" list inside the tick, however deep it is nested
+local function scan(tbl, depth)
+    if depth > 6 or type(tbl) ~= "table" then return end
+    for key, value in pairs(tbl) do
+        if key == "drops" and type(value) == "table" then
+            for _, drop in pairs(value) do
+                if type(drop) == "table" then
+                    addDrop(drop.id)
+                end
+            end
+        elseif type(value) == "table" then
+            scan(value, depth + 1)
+        end
     end
 end
 
-local function consider(inst)
+table.insert(conns, BattleTick.OnClientEvent:Connect(function(tick)
     if not State.AutoCollect then return end
-    local id = dropId(inst)
-    if id and not seen[id] then
-        seen[id] = true
-        queue[#queue + 1] = id
-        task.delay(30, function() seen[id] = nil end) -- allow id reuse after 30s
-    end
-end
+    scan(tick, 0)
+end))
 
 local function setCollect(on)
     State.AutoCollect = on and true or false
-    if State.AutoCollect then
-        -- pick up what is already lying around, once
-        for _, inst in ipairs(workspace:GetDescendants()) do
-            consider(inst)
-        end
-    else
+    if not State.AutoCollect then
         table.clear(queue)
     end
 end
 
--- every new drop is picked up the moment it appears
-table.insert(conns, workspace.DescendantAdded:Connect(function(inst)
-    task.defer(consider, inst)
-end))
-
--- sender: max 8 collects per second so the server never rate limits you
+-- sender: small batches, one call every 0.25s, never too fast
 task.spawn(function()
     while env.RAS_RUN do
-        local id = table.remove(queue, 1)
-        if id and State.AutoCollect then
-            pcall(function() Collect:FireServer({ id }) end)
-            task.wait(0.125)
-        else
-            task.wait(0.2)
+        if State.AutoCollect and #queue > 0 then
+            local ids, now = {}, os.clock()
+            while #queue > 0 and #ids < BATCH_SIZE and queue[1].at <= now do
+                ids[#ids + 1] = table.remove(queue, 1).id
+            end
+            if #ids > 0 then
+                pcall(function() Collect:FireServer(ids) end)
+            end
         end
+        task.wait(SEND_EVERY)
     end
 end)
 
@@ -121,7 +128,7 @@ Main:Section("Features")
 
 Main:Toggle({
     Name = "Auto Collect Drops",
-    Desc = "Collects every drop automatically the moment it appears",
+    Desc = "Collects every drop automatically the moment an enemy dies",
     Default = true,
     Flag = "RAS.AutoCollect",
     Callback = setCollect,
