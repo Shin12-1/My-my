@@ -41,8 +41,8 @@ end
 local CLICK_DELAY = 0.47      -- the game's own client clicks every ~0.47s
 local POP_DELAY = 0.6         -- the game's own client never clicked a pop sooner than ~0.57s
 local MAX_POP_MULT = 3        -- free pops seen: x1.5, x2, x3. x20 opens a Robux prompt, so never go above ~10
-local REBIRTH_DELAY = 3       -- the game's own client rebirths every ~3s
-local EVOLVE_DELAY = 3
+local REBIRTH_DELAY = 10       -- the game's own client rebirths every ~3s
+local EVOLVE_DELAY = 10
 local HOLD_TIME = 2.5         -- seconds after a rebirth that we keep putting you back (keep it below REBIRTH_DELAY)
 local USE_POP_REMOTE = true   -- also fire the remote after the mouse click (backup)
 local DEBUG = true
