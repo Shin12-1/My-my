@@ -15,8 +15,8 @@ env.IGKII_LOADER = 'loadstring(game:HttpGet("' .. BASE .. '/scripts/loader.lua")
 local routes = {
     [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
     [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
-    [103675241402197] = { "Boost game", "scripts/autoboost.lua" },  -- PUT the PlaceId of the boost game here instead of 0
-    [10772277337] = { "Boost game", "scripts/autoboost.lua" },  -- PUT the GameId of the boost game here instead of 1
+    [103675241402197] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the PlaceId of the boost game here instead of 0
+    [10772277337] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the GameId of the boost game here instead of 1
 }
 local FALLBACK = { "Universal", "scripts/universal.lua" }
 
