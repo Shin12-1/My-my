@@ -17,6 +17,7 @@ local routes = {
     [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
     [103675241402197] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the PlaceId of the boost game here instead of 0
     [10772277337] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the GameId of the boost game here instead of 1
+    [127788924565169] = "rollasword.lua", -- [RELEASE] Roll a Sword (GameId 10771796704)
 }
 local FALLBACK = { "Universal", "scripts/universal.lua" }
 
