@@ -2,8 +2,11 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local env = (getgenv and getgenv()) or _G
-
+local Library = getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
+print(typeof(Library))
+for k, v in pairs(Library) do
+    print(k, typeof(v))
+end
 -- The loader provides IGKII_FETCH.
 local fetch = env.IGKII_FETCH
 if not fetch then
