@@ -9,26 +9,25 @@ local Remotes = RS:WaitForChild("Remotes")
 local DataUpdate = Remotes:WaitForChild("DataUpdate")
 local Collect = Remotes:WaitForChild("Collect")
 
+-- values follow the game's passes (x256 coins, 2x damage, fast roll, ...)
 local State = {
     Boost = false,
     AutoCollect = false,
-    Luck = 1000000,
-    Damage = 1000000,
-    Coins = 999999999,
-    Diamonds = 999999,
-    Magnet = 500,
-    WalkSpeed = 50,
-    Mult = 1000000,
-    RollTime = 0.05,
+    CoinX = 256,      -- biggest coin pass is x256
+    DamageX = 2,      -- 2x Damage pass
+    LuckX = 1,        -- no luck pass, keep real luck unless you raise it
+    RollSpeed = 2,    -- Fast Roll: roll time divided by this
+    Magnet = 40,
+    WalkSpeed = 32,
 }
 
 local conns, seen = {}, {}
 local cleaned = false
 local Window
-getgenv().RAS_RUN = true -- must be set before the collect loop starts
+getgenv().RAS_RUN = true
 
 -------------------------------------------------------------------
--- DATA BOOST (client-side only, fires the game's own DataUpdate)
+-- DATA BOOST (client-side only, based on your REAL data)
 -------------------------------------------------------------------
 local lastData = {
     PassiveTree = { vstart = 1 }, PotionLeft = 0, Coins = 251, TotalRolls = 6,
@@ -58,24 +57,31 @@ local lastData = {
     PaidRandomAllowed = true,
 }
 
--- tables that WE fired; the listener ignores them so it can never loop on itself
+-- pass flags from the Passes screenshot (only x2Coins is a confirmed key name)
+local PASS_KEYS = {
+    "x2Coins", "x4Coins", "x8Coins", "x16Coins", "x32Coins", "x64Coins", "x128Coins", "x256Coins",
+    "FastRoll", "VIP", "AutoCollect", "AutoRoll", "x2Diamonds", "2xDiamonds", "x2Damage", "2xDamage",
+}
+
 local firedByUs = setmetatable({}, { __mode = "k" })
 local pending = false
 
 local function applyBoost(data)
-    data.Luck = State.Luck
-    data.Damage = State.Damage
-    data.Coins = State.Coins
-    data.Diamonds = State.Diamonds
+    -- real values stay the base, passes only multiply them
+    local passes = {}
+    if type(data.Passes) == "table" then
+        for k, v in pairs(data.Passes) do passes[k] = v end
+    end
+    for _, key in ipairs(PASS_KEYS) do passes[key] = true end
+    data.Passes = passes
+
+    data.CoinMult = State.CoinX
+    data.Damage = (tonumber(data.Damage) or 1) * State.DamageX
+    data.Dps = (tonumber(data.Dps) or 1) * State.DamageX
+    data.Luck = (tonumber(data.Luck) or 1) * State.LuckX
+    data.RollTime = math.max((tonumber(data.RollTime) or 2.6) / State.RollSpeed, 0.2)
     data.Magnet = State.Magnet
     data.WalkSpeed = State.WalkSpeed
-    data.CoinMult = State.Mult
-    data.PassiveMult = State.Mult
-    data.PotionMult = State.Mult
-    data.Dps = State.Damage * 10
-    data.RollTime = State.RollTime
-    data.RollCost = 0
-    data.ServerLuck = { EndsAt = 0, Level = 0, Multiplier = State.Luck, Busy = false }
     return data
 end
 
@@ -87,11 +93,11 @@ local function fireBoost()
     end)
 end
 
--- at most one boost every 0.25s, however many events or slider ticks arrive
+-- at most one boost every 0.5s
 local function scheduleBoost()
     if pending or not State.Boost then return end
     pending = true
-    task.delay(0.25, function()
+    task.delay(0.5, function()
         pending = false
         if State.Boost and getgenv().RAS_RUN then
             fireBoost()
@@ -99,7 +105,6 @@ local function scheduleBoost()
     end)
 end
 
--- real server updates: remember them, then boost again (never react to our own)
 table.insert(conns, DataUpdate.OnClientEvent:Connect(function(data)
     if type(data) ~= "table" or firedByUs[data] then return end
     for k, v in pairs(data) do lastData[k] = v end
@@ -111,47 +116,62 @@ local function setBoost(on)
     if State.Boost then scheduleBoost() end
 end
 
-local function setCollect(on)
-    State.AutoCollect = on and true or false
-end
-
 local function setStat(key, value)
     State[key] = value
     scheduleBoost()
 end
 
 -------------------------------------------------------------------
--- AUTO COLLECT (fires Remotes.Collect for every drop)
+-- AUTO COLLECT (each drop once, rate limited, sane ids only)
 -------------------------------------------------------------------
+local queue = {}
+
 local function dropId(inst)
     local n = tonumber(inst.Name)
         or inst:GetAttribute("Id") or inst:GetAttribute("ID")
         or inst:GetAttribute("DropId") or inst:GetAttribute("Drop")
-    return tonumber(n)
+    n = tonumber(n)
+    if n and n >= 1 and n < 10000000 and n % 1 == 0 then
+        return n
+    end
 end
 
-local function collect(inst)
+local function consider(inst)
     if not State.AutoCollect then return end
     local id = dropId(inst)
     if id and not seen[id] then
         seen[id] = true
-        Collect:FireServer({ id })
-        task.delay(5, function() seen[id] = nil end) -- allow id reuse
+        queue[#queue + 1] = id
+        task.delay(30, function() seen[id] = nil end) -- allow id reuse after 30s
+    end
+end
+
+local function setCollect(on)
+    State.AutoCollect = on and true or false
+    if State.AutoCollect then
+        -- pick up what is already lying around, once
+        for _, inst in ipairs(workspace:GetDescendants()) do
+            consider(inst)
+        end
+    else
+        table.clear(queue)
     end
 end
 
 table.insert(conns, workspace.DescendantAdded:Connect(function(inst)
-    task.defer(collect, inst)
+    task.defer(consider, inst)
 end))
 
+-- sender: max 8 collects per second
 task.spawn(function()
     while getgenv().RAS_RUN do
-        if State.AutoCollect then
-            for _, inst in ipairs(workspace:GetDescendants()) do
-                collect(inst)
-            end
+        local id = table.remove(queue, 1)
+        if id and State.AutoCollect then
+            pcall(function() Collect:FireServer({ id }) end)
+            task.wait(0.125)
+        else
+            task.wait(0.2)
         end
-        task.wait(1)
     end
 end)
 
@@ -163,6 +183,7 @@ local function cleanup()
     cleaned = true
     getgenv().RAS_RUN = false
     State.Boost, State.AutoCollect = false, false
+    table.clear(queue)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
 end
 
@@ -176,16 +197,16 @@ end
 -------------------------------------------------------------------
 local Library = getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
 
-Window = Library.Window({ Title = "Roll a Sword" }) -- dot call, not colon
+Window = Library.Window({ Title = "Roll a Sword" })
 Window:OnDestroy(cleanup)
 
-local Main = Window:Tab({ Name = "Main", PageTitle = "Roll a Sword", Desc = "OP stats are client-side only" })
+local Main = Window:Tab({ Name = "Main", PageTitle = "Roll a Sword", Desc = "Stats follow the game's passes (client side)" })
 
 Main:Section("Features")
 
 Main:Toggle({
     Name = "OP Stats",
-    Desc = "Fires the boosted data into the game's DataUpdate (client side)",
+    Desc = "Turns on every pass client-side and multiplies your real stats",
     Default = false,
     Flag = "RAS.Boost",
     Callback = setBoost,
@@ -193,7 +214,7 @@ Main:Toggle({
 
 Main:Toggle({
     Name = "Auto Collect Drops",
-    Desc = "Fires Remotes.Collect for every drop that appears",
+    Desc = "Collects each drop once, max 8 per second",
     Default = false,
     Flag = "RAS.AutoCollect",
     Callback = setCollect,
@@ -202,32 +223,33 @@ Main:Toggle({
 Main:Section("Stats")
 
 Main:Slider({
-    Name = "Luck", Min = 1, Max = 1000000000, Step = 1000,
-    Default = State.Luck, Flag = "RAS.Luck",
-    Callback = function(v) setStat("Luck", v) end,
+    Name = "Luck", Min = 1, Max = 100, Step = 1, Suffix = "x",
+    Default = State.LuckX, Flag = "RAS.Luck",
+    Callback = function(v) setStat("LuckX", v) end,
 })
 
 Main:Slider({
-    Name = "Damage", Min = 1, Max = 1000000000, Step = 1000,
-    Default = State.Damage, Flag = "RAS.Damage",
-    Callback = function(v) setStat("Damage", v) end,
+    Name = "Damage", Min = 1, Max = 100, Step = 1, Suffix = "x",
+    Default = State.DamageX, Flag = "RAS.Damage",
+    Desc = "2x is the Damage pass",
+    Callback = function(v) setStat("DamageX", v) end,
 })
 
 Main:Slider({
-    Name = "Multiplier", Min = 1, Max = 1000000000, Step = 1000,
-    Default = State.Mult, Flag = "RAS.Mult",
-    Desc = "Coin, passive and potion multiplier",
-    Callback = function(v) setStat("Mult", v) end,
+    Name = "Multiplier", Min = 1, Max = 1024, Step = 1, Suffix = "x",
+    Default = State.CoinX, Flag = "RAS.Mult",
+    Desc = "Coin multiplier, 256 is the biggest coin pass",
+    Callback = function(v) setStat("CoinX", v) end,
 })
 
 Main:Slider({
-    Name = "Magnet", Min = 12, Max = 1000, Step = 1,
+    Name = "Magnet", Min = 12, Max = 200, Step = 1,
     Default = State.Magnet, Flag = "RAS.Magnet",
     Callback = function(v) setStat("Magnet", v) end,
 })
 
 Main:Slider({
-    Name = "WalkSpeed", Min = 16, Max = 200, Step = 1,
+    Name = "WalkSpeed", Min = 16, Max = 100, Step = 1,
     Default = State.WalkSpeed, Flag = "RAS.WalkSpeed",
     Callback = function(v) setStat("WalkSpeed", v) end,
 })
