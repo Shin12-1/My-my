@@ -13,12 +13,12 @@ env.IGKII_LOADER = 'loadstring(game:HttpGet("' .. BASE .. '/scripts/loader.lua")
 -- [PlaceId or GameId] = { "Display name", "path inside the repo" }
 -- Games that are not listed here get the universal script (Home + Misc).
 local routes = {
-    [97617452700163] = { "Naruto Eye game", "scripts/autocast.lua" },  -- PlaceId
-    [10770933473]    = { "Naruto Eye game", "scripts/autocast.lua" },  -- GameId
-    [103675241402197] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the PlaceId of the boost game here instead of 0
-    [10772277337] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PUT the GameId of the boost game here instead of 1
-    [127788924565169] = "scripts/rollasword.lua", -- [RELEASE] Roll a Sword (GameId 10771796704)
-    [10771796704] = "scripts/rollasword.lua", -- [RELEASE] Roll a Sword (GameId 10771796704)
+    [97617452700163]  = { "Naruto Eye game", "scripts/autocast.lua" },        -- PlaceId
+    [10770933473]     = { "Naruto Eye game", "scripts/autocast.lua" },        -- GameId
+    [103675241402197] = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- PlaceId
+    [10772277337]     = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- GameId
+    [127788924565169] = { "[RELEASE] Roll a Sword", "scripts/rollasword.lua" }, -- PlaceId
+    [10771796704]     = { "[RELEASE] Roll a Sword", "scripts/rollasword.lua" }, -- GameId
 }
 local FALLBACK = { "Universal", "scripts/universal.lua" }
 
@@ -44,7 +44,11 @@ local function fetch(path)
 end
 
 local route = routes[game.PlaceId] or routes[game.GameId] or FALLBACK
-print("[igkii] PlaceId " .. game.PlaceId .. ", GameId " .. game.GameId .. " -> " .. route[1])
+-- safety: if a route is written as just a path string, turn it into { name, path }
+if type(route) == "string" then
+    route = { route, route }
+end
+print("[igkii] PlaceId " .. game.PlaceId .. ", GameId " .. game.GameId .. " -> " .. tostring(route[1]))
 
 env.IGKII_FETCH = function(path)
     local body, where = fetch(path)
@@ -57,12 +61,12 @@ end
 
 local source, where = fetch(route[2])
 if not source then
-    warn("[igkii] could not download " .. route[1] .. ": " .. tostring(where))
+    warn("[igkii] could not download " .. tostring(route[1]) .. ": " .. tostring(where))
     return
 end
 
 if source:sub(1, 1) == "<" then
-    warn("[igkii] " .. route[1] .. " came back as a web page, not Lua")
+    warn("[igkii] " .. tostring(route[1]) .. " came back as a web page, not Lua")
     warn("[igkii] link used: " .. tostring(where))
     warn("[igkii] it starts with: " .. source:sub(1, 150))
     return
@@ -70,12 +74,12 @@ end
 
 local fn, compileErr = loadstring(source)
 if not fn then
-    warn("[igkii] " .. route[1] .. " has a syntax error: " .. tostring(compileErr))
+    warn("[igkii] " .. tostring(route[1]) .. " has a syntax error: " .. tostring(compileErr))
     warn("[igkii] it starts with: " .. source:sub(1, 150))
     return
 end
 
 local ok, runErr = pcall(fn)
 if not ok then
-    warn("[igkii] " .. route[1] .. " errored: " .. tostring(runErr))
+    warn("[igkii] " .. tostring(route[1]) .. " errored: " .. tostring(runErr))
 end
