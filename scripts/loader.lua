@@ -19,6 +19,8 @@ local routes = {
     [10772277337]     = { "Shovel Snow For Eggs", "scripts/autoboost.lua" },  -- GameId
     [127788924565169] = { "[RELEASE] Roll a Sword", "scripts/rollasword.lua" }, -- PlaceId
     [10771796704]     = { "[RELEASE] Roll a Sword", "scripts/rollasword.lua" }, -- GameId
+    [109057858722721] = { "+1 Sword Warrior Evolution", "scripts/swordwarrior.lua" },
+    [10770511289]     = { "+1 Sword Warrior Evolution", "scripts/swordwarrior.lua" },
 }
 local FALLBACK = { "Universal", "scripts/universal.lua" }
 
