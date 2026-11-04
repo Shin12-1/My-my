@@ -21,6 +21,8 @@ local routes = {
     [10771796704]     = { "[RELEASE] Roll a Sword", "scripts/rollasword.lua" }, -- GameId
     [109057858722721] = { "+1 Sword Warrior Evolution", "scripts/swordwarrior.lua" },
     [10770511289]     = { "+1 Sword Warrior Evolution", "scripts/swordwarrior.lua" },
+    [75821372602076] = { "+1 Hacker Evolve", "scripts/hackerevolve.lua" },
+    [10772139684]    = { "+1 Hacker Evolve", "scripts/hackerevolve.lua" },
 }
 local FALLBACK = { "Universal", "scripts/universal.lua" }
 
