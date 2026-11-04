@@ -1,6 +1,6 @@
 -- +1 Hacker Evolve | igkii UI
 -- PlaceId 75821372602076 | GameId 10772139684
--- Auto Click | Auto Pops (real mouse click + remote, skips paid pops) | Auto Rebirth | Auto Evolve
+-- Auto Click | Auto Pops (real mouse click + remote, skips paid pops) | Auto Rebirth (stays in place) | Auto Evolve
 
 local env = (getgenv and getgenv()) or _G
 local fetch = env.IGKII_FETCH
@@ -41,8 +41,9 @@ end
 local CLICK_DELAY = 0.47      -- the game's own client clicks every ~0.47s
 local POP_DELAY = 0.6         -- the game's own client never clicked a pop sooner than ~0.57s
 local MAX_POP_MULT = 3        -- free pops seen: x1.5, x2, x3. x20 opens a Robux prompt, so never go above ~10
-local REBIRTH_DELAY = 1       -- the game's own client rebirths every ~1s
-local EVOLVE_DELAY = 1
+local REBIRTH_DELAY = 3       -- the game's own client rebirths every ~3s
+local EVOLVE_DELAY = 3
+local HOLD_TIME = 2.5         -- seconds after a rebirth that we keep putting you back (keep it below REBIRTH_DELAY)
 local USE_POP_REMOTE = true   -- also fire the remote after the mouse click (backup)
 local DEBUG = true
 -- ====================================
@@ -53,12 +54,18 @@ local state = {
     WalkWhileClick = true,
     AutoPops = false,
     AutoRebirth = false,
+    StayOnRebirth = true,
     AutoEvolve = false,
     PopsClicked = 0,
 }
 
 local function dbg(...)
     if DEBUG then print("[HackerEvolve]", ...) end
+end
+
+local function getRoot()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
 end
 
 ------------------------------------------------------------------
@@ -134,7 +141,7 @@ local home, stepDir, lastStep = nil, 1, 0
 local function stepWalk()
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local root = getRoot()
     if not (hum and root) then return end
     if not home or (root.Position - home).Magnitude > 40 then
         home = root.Position
@@ -160,11 +167,53 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------
+-- STAY IN PLACE ON REBIRTH
+-- The game moves you to the spawnpoint after a rebirth. We save your
+-- position right before firing it, then for HOLD_TIME seconds put you
+-- back whenever you are far from that spot (works for a teleport and
+-- for a respawn, because the new HumanoidRootPart is picked up each tick).
+------------------------------------------------------------------
+local savedCFrame = nil
+local holdUntil = 0
+
+task.spawn(function()
+    while state.Alive do
+        if savedCFrame and os.clock() < holdUntil then
+            local root = getRoot()
+            if root and (root.Position - savedCFrame.Position).Magnitude > 8 then
+                root.CFrame = savedCFrame
+                root.AssemblyLinearVelocity = Vector3.zero
+                dbg("put you back where you were")
+            end
+        end
+        task.wait(0.05)
+    end
+end)
+
+------------------------------------------------------------------
 -- AUTO REBIRTH
 ------------------------------------------------------------------
+local rebirthConn
+if RebirthRemote then
+    -- the server answers a rebirth with OnClientEvent, so extend the hold window
+    rebirthConn = RebirthRemote.OnClientEvent:Connect(function()
+        if state.StayOnRebirth and savedCFrame then
+            holdUntil = os.clock() + HOLD_TIME
+        end
+    end)
+end
+
 task.spawn(function()
     while state.Alive do
         if state.AutoRebirth and RebirthRemote then
+            if state.StayOnRebirth and os.clock() >= holdUntil then
+                -- only save when we are not in the middle of a hold, so we never save the spawnpoint
+                local root = getRoot()
+                if root then
+                    savedCFrame = root.CFrame
+                    holdUntil = os.clock() + HOLD_TIME
+                end
+            end
             pcall(function() RebirthRemote:FireServer() end)
             task.wait(REBIRTH_DELAY)
         else
@@ -303,6 +352,12 @@ tab:Toggle({
     Callback = function(value) state.AutoRebirth = value end,
 })
 tab:Toggle({
+    Name = "Stay In Place On Rebirth",
+    Desc = "Puts you back where you were after the game sends you to spawn",
+    Default = true,
+    Callback = function(value) state.StayOnRebirth = value end,
+})
+tab:Toggle({
     Name = "Auto Evolve",
     Desc = "Tries to evolve every 3 seconds",
     Default = false,
@@ -319,6 +374,7 @@ local function unload()
     state.AutoEvolve = false
     if popConn then popConn:Disconnect() end
     if evolveConn then evolveConn:Disconnect() end
+    if rebirthConn then rebirthConn:Disconnect() end
     env.HE_UNLOAD = nil
 end
 
