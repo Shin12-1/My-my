@@ -3,9 +3,7 @@
 
 if getgenv().RAS_UNLOAD then pcall(getgenv().RAS_UNLOAD) end
 
-local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
-local UIS = game:GetService("UserInputService")
 
 local Remotes = RS:WaitForChild("Remotes")
 local DataUpdate = Remotes:WaitForChild("DataUpdate")
@@ -24,9 +22,11 @@ local State = {
     RollTime = 0.05,
 }
 
-local conns, seen, destroyers = {}, {}, {}
+local conns, seen = {}, {}
 local firing = false
-getgenv().RAS_RUN = true -- must be set before the loop below starts
+local cleaned = false
+local Window
+getgenv().RAS_RUN = true -- must be set before the collect loop starts
 
 -------------------------------------------------------------------
 -- DATA BOOST (client-side only, fires the game's own DataUpdate)
@@ -105,6 +105,11 @@ local function setCollect(on)
     State.AutoCollect = on and true or false
 end
 
+local function setStat(key, value)
+    State[key] = value
+    if State.Boost then fireBoost(table.clone(lastData)) end
+end
+
 -------------------------------------------------------------------
 -- AUTO COLLECT (fires Remotes.Collect for every drop)
 -------------------------------------------------------------------
@@ -143,143 +148,86 @@ end)
 -------------------------------------------------------------------
 -- UNLOAD
 -------------------------------------------------------------------
-getgenv().RAS_UNLOAD = function()
+local function cleanup()
+    if cleaned then return end
+    cleaned = true
     getgenv().RAS_RUN = false
     State.Boost, State.AutoCollect = false, false
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    for _, d in ipairs(destroyers) do pcall(d) end
+end
+
+getgenv().RAS_UNLOAD = function()
+    cleanup()
+    if Window then pcall(function() Window:Destroy() end) end
 end
 
 -------------------------------------------------------------------
--- UI: tries igkii_lib first, falls back to a built-in UI
+-- UI (igkii_lib)
 -------------------------------------------------------------------
-local function tryCall(obj, names, argSets)
-    for _, name in ipairs(names) do
-        local f = obj[name]
-        if type(f) == "function" then
-            for _, args in ipairs(argSets) do
-                local ok, res = pcall(function()
-                    return f(obj, table.unpack(args))
-                end)
-                if ok and res ~= nil then return true, res end
-            end
-        end
-    end
-    return false
-end
+local Library = getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
 
-local function tryLibUI()
-    local okLib, Library = pcall(function()
-        return getgenv().igkii_lib or loadstring(getgenv().IGKII_FETCH("igkii_lib.lua"))()
-    end)
-    if not okLib or type(Library) ~= "table" then
-        warn("[RAS] could not load igkii_lib: " .. tostring(Library))
-        return false
-    end
+Window = Library.Window({ Title = "Roll a Sword" }) -- dot call, not colon
 
-    -- prints the real method names of your lib, send me this line
-    local keys = {}
-    for k, v in pairs(Library) do keys[#keys + 1] = tostring(k) .. ":" .. typeof(v) end
-    table.sort(keys)
-    warn("[RAS] igkii_lib API -> " .. table.concat(keys, ", "))
+-- closing/destroying the window from anywhere also stops the script
+Window:OnDestroy(cleanup)
 
-    local okW, Window = tryCall(Library,
-        { "CreateWindow", "Window", "MakeWindow", "NewWindow", "CreateLib", "Create", "New", "Init", "Load" },
-        { { { Title = "Roll a Sword", Name = "Roll a Sword" } }, { "Roll a Sword" } })
-    if not okW or type(Window) ~= "table" then return false end
+local Main = Window:Tab({ Name = "Main", PageTitle = "Roll a Sword", Desc = "OP stats are client-side only" })
 
-    local okT, Tab = tryCall(Window,
-        { "CreateTab", "AddTab", "NewTab", "MakeTab", "Tab" },
-        { { { Name = "Main", Title = "Main" } }, { "Main" } })
-    if not okT or type(Tab) ~= "table" then Tab = Window end
+Main:Section("Features")
 
-    local okA = tryCall(Tab,
-        { "CreateToggle", "AddToggle", "NewToggle", "Toggle" },
-        { { { Name = "OP Stats (client)", Default = false, Callback = setBoost } },
-          { "OP Stats (client)", false, setBoost } })
-    if not okA then return false end
+Main:Toggle({
+    Name = "OP Stats",
+    Desc = "Fires the boosted data into the game's DataUpdate (client side)",
+    Default = false,
+    Flag = "RAS.Boost",
+    Callback = setBoost,
+})
 
-    tryCall(Tab,
-        { "CreateToggle", "AddToggle", "NewToggle", "Toggle" },
-        { { { Name = "Auto Collect Drops", Default = false, Callback = setCollect } },
-          { "Auto Collect Drops", false, setCollect } })
+Main:Toggle({
+    Name = "Auto Collect Drops",
+    Desc = "Fires Remotes.Collect for every drop that appears",
+    Default = false,
+    Flag = "RAS.AutoCollect",
+    Callback = setCollect,
+})
 
-    tryCall(Tab,
-        { "CreateButton", "AddButton", "NewButton", "Button" },
-        { { { Name = "Unload", Callback = getgenv().RAS_UNLOAD } },
-          { "Unload", getgenv().RAS_UNLOAD } })
+Main:Section("Stats")
 
-    table.insert(destroyers, function()
-        for _, n in ipairs({ "Destroy", "Unload", "Close" }) do
-            if type(Window[n]) == "function" then Window[n](Window) return end
-        end
-    end)
-    return true
-end
+Main:Slider({
+    Name = "Luck", Min = 1, Max = 1000000000, Step = 1000,
+    Default = State.Luck, Flag = "RAS.Luck",
+    Callback = function(v) setStat("Luck", v) end,
+})
 
-local function builtInUI()
-    local parent = (gethui and gethui()) or game:GetService("CoreGui")
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "RAS_UI"
-    gui.ResetOnSpawn = false
-    gui.Parent = parent
-    table.insert(destroyers, function() gui:Destroy() end)
+Main:Slider({
+    Name = "Damage", Min = 1, Max = 1000000000, Step = 1000,
+    Default = State.Damage, Flag = "RAS.Damage",
+    Callback = function(v) setStat("Damage", v) end,
+})
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromOffset(220, 190)
-    frame.Position = UDim2.new(0, 30, 0.4, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
-    frame.BorderSizePixel = 0
-    frame.Active = true
-    frame.Draggable = true
-    frame.Parent = gui
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+Main:Slider({
+    Name = "Multiplier", Min = 1, Max = 1000000000, Step = 1000,
+    Default = State.Mult, Flag = "RAS.Mult",
+    Desc = "Coin, passive and potion multiplier",
+    Callback = function(v) setStat("Mult", v) end,
+})
 
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 32)
-    title.BackgroundTransparency = 1
-    title.Text = "Roll a Sword  (RightShift hide)"
-    title.TextColor3 = Color3.new(1, 1, 1)
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 13
-    title.Parent = frame
+Main:Slider({
+    Name = "Magnet", Min = 12, Max = 1000, Step = 1,
+    Default = State.Magnet, Flag = "RAS.Magnet",
+    Callback = function(v) setStat("Magnet", v) end,
+})
 
-    local function button(text, y, callback, isToggle)
-        local b = Instance.new("TextButton")
-        b.Size = UDim2.new(1, -20, 0, 34)
-        b.Position = UDim2.new(0, 10, 0, y)
-        b.BackgroundColor3 = Color3.fromRGB(45, 45, 56)
-        b.TextColor3 = Color3.new(1, 1, 1)
-        b.Font = Enum.Font.Gotham
-        b.TextSize = 13
-        b.Text = text .. (isToggle and ": OFF" or "")
-        b.BorderSizePixel = 0
-        b.Parent = frame
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-        local on = false
-        b.MouseButton1Click:Connect(function()
-            if isToggle then
-                on = not on
-                b.Text = text .. (on and ": ON" or ": OFF")
-                b.BackgroundColor3 = on and Color3.fromRGB(60, 140, 90) or Color3.fromRGB(45, 45, 56)
-            end
-            callback(on)
-        end)
-    end
+Main:Slider({
+    Name = "WalkSpeed", Min = 16, Max = 200, Step = 1,
+    Default = State.WalkSpeed, Flag = "RAS.WalkSpeed",
+    Callback = function(v) setStat("WalkSpeed", v) end,
+})
 
-    button("OP Stats", 40, setBoost, true)
-    button("Auto Collect", 82, setCollect, true)
-    button("Unload", 134, function() getgenv().RAS_UNLOAD() end, false)
+Main:Section("Script")
 
-    table.insert(conns, UIS.InputBegan:Connect(function(input, gp)
-        if not gp and input.KeyCode == Enum.KeyCode.RightShift then
-            frame.Visible = not frame.Visible
-        end
-    end))
-end
-
-local okCall, libWorked = pcall(tryLibUI)
-if not (okCall and libWorked) then
-    warn("[RAS] igkii_lib methods did not match, using built-in UI")
-    builtInUI()
-end
+Main:Button({
+    Name = "Unload",
+    Desc = "Stops everything and closes the UI",
+    Callback = function() getgenv().RAS_UNLOAD() end,
+})
