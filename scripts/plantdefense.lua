@@ -2,6 +2,7 @@
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
+-- Auto Roll: keeps the in-game Auto Roll turned ON
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
 
 local env = (getgenv and getgenv()) or _G
@@ -36,6 +37,7 @@ local CHUNK = 40
 
 local running = true
 local autoDelete = false
+local autoRoll = false -- ADDED
 local lastRun = 0
 local deletedTotal = 0
 local connections = {}
@@ -336,6 +338,67 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
+-- Auto Roll (ADDED FEATURE)
+----------------------------------------------------------------------
+local function forceAutoRoll()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+
+    for _, v in ipairs(pg:GetDescendants()) do
+        if (v:IsA("TextLabel") or v:IsA("TextButton")) and v.Text:upper() == "OFF" then
+            local isAutoRoll = false
+            local button = v
+            
+            for i = 1, 3 do
+                if button then
+                    if string.find(button.Name:upper(), "AUTO") or string.find(button.Name:upper(), "ROLL") then
+                        isAutoRoll = true
+                    end
+                    button = button.Parent
+                end
+            end
+            
+            if not isAutoRoll and v.Parent then
+                for _, sib in ipairs(v.Parent:GetChildren()) do
+                    if sib:IsA("TextLabel") and string.find(sib.Text:upper(), "AUTO ROLL") then
+                        isAutoRoll = true
+                        break
+                    end
+                end
+            end
+
+            if isAutoRoll and v.Parent then
+                local clickable = v
+                if not v:IsA("GuiButton") then
+                    clickable = v.Parent
+                end
+                
+                if clickable and clickable:IsA("GuiButton") then
+                    if firesignal then
+                        pcall(firesignal, clickable.MouseButton1Click)
+                    else
+                        local vim = game:GetService("VirtualInputManager")
+                        local pos = clickable.AbsolutePosition + (clickable.AbsoluteSize / 2)
+                        vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+                        vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+                    end
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while running do
+        if autoRoll then
+            pcall(forceAutoRoll)
+        end
+        task.wait(1)
+    end
+end)
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
 -- UI (igkii lib)
 ----------------------------------------------------------------------
 local Window = Library.Window({ Title = "Plant Defense RNG" })
@@ -344,10 +407,12 @@ local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
+table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- ADDED
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
+    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end }, -- ADDED
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -371,6 +436,17 @@ tab:Toggle({
                 fireStart()
             end
         end
+    end,
+})
+
+-- ADDED: Auto Roll UI
+tab:Section("Auto Roll")
+tab:Toggle({
+    Name = "Auto Roll ON",
+    Desc = "If the in-game Auto Roll button turns OFF, this clicks it to turn it back ON.",
+    Default = false,
+    Callback = function(value)
+        autoRoll = value
     end,
 })
 
@@ -405,6 +481,7 @@ Window:OnDestroy(function()
     running = false
     autoDelete = false
     autoStart = false
+    autoRoll = false -- ADDED
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -415,10 +492,11 @@ env.PDR_UNLOAD = function()
     running = false
     autoDelete = false
     autoStart = false
+    autoRoll = false -- ADDED
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
     pcall(function() Window:Destroy() end)
-end
+end)
 
 Window:PlayIntro()
