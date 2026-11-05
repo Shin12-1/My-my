@@ -407,41 +407,39 @@ local function forceAutoRoll()
     end
 
     for _, v in ipairs(pg:GetDescendants()) do
-        if (v:IsA("TextLabel") or v:IsA("TextButton")) and v.Text:upper() == "OFF" then
-            local isAutoRoll = false
+        if (v:IsA("TextLabel") or v:IsA("TextButton")) and string.upper(v.Text) == "OFF" then
+            -- Find the clickable button parent
             local button = v
-
-            for _ = 1, 3 do
-                if button then
-                    if string.find(button.Name:upper(), "AUTO")
-                        or string.find(button.Name:upper(), "ROLL") then
-                        isAutoRoll = true
-                    end
-                    button = button.Parent
-                end
+            while button and not button:IsA("GuiButton") do
+                button = button.Parent
             end
 
-            if not isAutoRoll and v.Parent then
-                for _, sib in ipairs(v.Parent:GetChildren()) do
-                    if sib:IsA("TextLabel") and string.find(sib.Text:upper(), "AUTO ROLL") then
-                        isAutoRoll = true
-                        break
+            if button then
+                -- Verify it's the Auto Roll button by looking for "AUTO" or "ROLL" nearby
+                local isAutoRoll = false
+                local checkNode = button
+                
+                for _ = 1, 3 do
+                    if not checkNode then break end
+                    for _, desc in ipairs(checkNode:GetDescendants()) do
+                        if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+                            local txt = string.upper(desc.Text)
+                            if string.find(txt, "AUTO") or string.find(txt, "ROLL") then
+                                isAutoRoll = true
+                                break
+                            end
+                        end
                     end
-                end
-            end
-
-            if isAutoRoll and v.Parent then
-                local clickable = v
-                if not v:IsA("GuiButton") then
-                    clickable = v.Parent
+                    if isAutoRoll then break end
+                    checkNode = checkNode.Parent
                 end
 
-                if clickable and clickable:IsA("GuiButton") then
+                if isAutoRoll then
                     if firesignal then
-                        pcall(firesignal, clickable.MouseButton1Click)
+                        pcall(firesignal, button.MouseButton1Click)
                     else
                         local vim = game:GetService("VirtualInputManager")
-                        local pos = clickable.AbsolutePosition + (clickable.AbsoluteSize / 2)
+                        local pos = button.AbsolutePosition + (button.AbsoluteSize / 2)
                         vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
                         vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
                     end
@@ -571,6 +569,6 @@ env.PDR_UNLOAD = function()
     pcall(function()
         Window:Destroy()
     end)
-end
+end)
 
 Window:PlayIntro()
