@@ -36,6 +36,7 @@ local CHUNK = 40
 
 local running = true
 local autoDelete = false
+local autoStart = false
 local autoRoll = false -- [AUTO ROLL ADDED]
 local lastRun = 0
 local deletedTotal = 0
@@ -223,7 +224,6 @@ end)
 -- A finished round shows up as an Enemies "wave" update with phase = "idle"
 -- (or result = "cleared"), and sometimes a "clear" event right before it.
 ----------------------------------------------------------------------
-local autoStart = false
 local START_COOLDOWN = 3
 
 local myPlot = nil          -- e.g. "Plot4"
@@ -337,7 +337,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
--- [AUTO ROLL ADDED]
+-- Auto Roll (ADDED)
 ----------------------------------------------------------------------
 local function forceAutoRoll()
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
@@ -395,7 +395,6 @@ task.spawn(function()
         task.wait(1)
     end
 end)
-----------------------------------------------------------------------
 
 ----------------------------------------------------------------------
 -- UI (igkii lib)
@@ -406,12 +405,12 @@ local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
-table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- [AUTO ROLL ADDED]
+table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- ADDED
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
-    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end }, -- [AUTO ROLL ADDED]
+    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end }, -- ADDED
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -438,8 +437,7 @@ tab:Toggle({
     end,
 })
 
--- [AUTO ROLL ADDED]
-tab:Section("Auto Roll")
+-- [AUTO ROLL TOGGLE ADDED HERE]
 tab:Toggle({
     Name = "Auto Roll ON",
     Desc = "If the in-game Auto Roll turns OFF, this clicks it to turn it back ON.",
@@ -480,7 +478,7 @@ Window:OnDestroy(function()
     running = false
     autoDelete = false
     autoStart = false
-    autoRoll = false -- [AUTO ROLL ADDED]
+    autoRoll = false -- ADDED
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -491,7 +489,7 @@ env.PDR_UNLOAD = function()
     running = false
     autoDelete = false
     autoStart = false
-    autoRoll = false -- [AUTO ROLL ADDED]
+    autoRoll = false -- ADDED
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
