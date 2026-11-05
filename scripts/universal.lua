@@ -1,7 +1,21 @@
--- Universal v2  |  Home + Misc in any game  |  igkii UI
+-- Universal v3  |  Home + Misc in any game  |  igkii UI
 local env = (getgenv and getgenv()) or _G
-local fetch = env.IGKII_FETCH
-if not fetch then
+
+--==================================================================
+-- CONFIG
+--==================================================================
+local Config = {
+    Title = "igkii",
+    Tier  = "Universal",
+    UILibrary = "igkii_lib.lua",
+    -- Functions this script needs from the UI library. If one is missing it stops with a clear message.
+    RequiredApi = { "Window", "MiscFeatures" },
+}
+
+--==================================================================
+-- Loader check
+--==================================================================
+if not env.IGKII_FETCH then
     warn("[Universal] run this through the loader")
     return
 end
@@ -9,31 +23,35 @@ end
 local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-----------------------------------------------------------------
--- Load the UI library
-----------------------------------------------------------------
-local okLoad, Library = pcall(function()
-    local source = fetch("igkii_lib.lua")
-    local fn, compileErr = loadstring(source)
-    assert(fn, "syntax error in igkii_lib.lua: " .. tostring(compileErr))
+--==================================================================
+-- UI library (downloaded, verified and compiled by the loader)
+--==================================================================
+local function loadLibrary()
+    if env.IGKII_REQUIRE then
+        return env.IGKII_REQUIRE(Config.UILibrary)
+    end
+    -- older loader without IGKII_REQUIRE
+    local fn, compileErr = loadstring(env.IGKII_FETCH(Config.UILibrary))
+    assert(fn, "syntax error in " .. Config.UILibrary .. ": " .. tostring(compileErr))
     return fn()
-end)
+end
 
+local okLoad, Library = pcall(loadLibrary)
 if not okLoad or type(Library) ~= "table" then
     warn("[Universal] could not load the UI library: " .. tostring(Library))
     return
 end
 
-for _, name in ipairs({ "Window", "MiscFeatures" }) do
+for _, name in ipairs(Config.RequiredApi) do
     if type(Library[name]) ~= "function" then
         warn("[Universal] the UI library is missing Library." .. name)
         return
     end
 end
 
-----------------------------------------------------------------
+--==================================================================
 -- Close the old window if the script is executed again
-----------------------------------------------------------------
+--==================================================================
 local previous = env.IGKII_WINDOW
 if type(previous) == "table" then
     for _, method in ipairs({ "Unload", "Destroy" }) do
@@ -45,9 +63,9 @@ if type(previous) == "table" then
 end
 env.IGKII_WINDOW = nil
 
-----------------------------------------------------------------
--- Game info for the Home tab (each value is cached and safe to call)
-----------------------------------------------------------------
+--==================================================================
+-- Home tab info (every value is cached or cheap, and safe to call)
+--==================================================================
 local cachedName
 
 local function gameName()
@@ -63,14 +81,14 @@ local function gameName()
     return cachedName
 end
 
-local function players()
+local function playerCount()
     local ok, text = pcall(function()
         return #Players:GetPlayers() .. " / " .. Players.MaxPlayers
     end)
     return ok and text or "?"
 end
 
-local function executor()
+local function executorName()
     if identifyexecutor then
         local ok, name, version = pcall(identifyexecutor)
         if ok and name then
@@ -84,17 +102,17 @@ local info = {
     { Title = "Game",      Get = gameName },
     { Title = "Place ID",  Get = function() return tostring(game.PlaceId) end },
     { Title = "Game ID",   Get = function() return tostring(game.GameId) end },
-    { Title = "Players",   Get = players },
+    { Title = "Players",   Get = playerCount },
     { Title = "Server ID", Get = function() return game.JobId ~= "" and game.JobId:sub(1, 8) or "Studio" end },
-    { Title = "Executor",  Get = executor },
+    { Title = "Executor",  Get = executorName },
 }
 
-----------------------------------------------------------------
--- Build the window
-----------------------------------------------------------------
+--==================================================================
+-- Window
+--==================================================================
 local misc
 
-local okWindow, Window = pcall(Library.Window, { Title = "igkii" })
+local okWindow, Window = pcall(Library.Window, { Title = Config.Title })
 if not okWindow or type(Window) ~= "table" then
     warn("[Universal] could not create the window: " .. tostring(Window))
     return
@@ -106,7 +124,7 @@ if type(Window.BuildHome) == "function" then
     local okHome, homeErr = pcall(function()
         Window:BuildHome(Library.MiscFeatures(function()
             return misc
-        end), info, { Tier = "Universal" })
+        end), info, { Tier = Config.Tier })
     end)
     if not okHome then
         warn("[Universal] Home tab failed: " .. tostring(homeErr))
