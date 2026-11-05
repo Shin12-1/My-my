@@ -48,6 +48,8 @@ local Config = {
         { name = "[RELEASE] Roll a Sword",      path = "scripts/rollasword.lua",   ids = { 127788924565169, 10771796704 } },
         { name = "+1 Sword Warrior Evolution",  path = "scripts/swordwarrior.lua", ids = { 109057858722721, 10770511289 } },
         { name = "+1 Hacker Evolve",            path = "scripts/hackerevolve.lua", ids = { 75821372602076, 10772139684 } },
+        { name = "+1 Bow Forge", path = "scripts/bowforge.lua", ids = { 85664262792712, 10770433673 } },
+        
     },
 }
 
