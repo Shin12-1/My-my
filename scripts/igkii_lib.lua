@@ -143,16 +143,16 @@ local Fonts = {
 local TOUCH = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 -- Shared layout and sizing constants.
-local WINDOW_WIDTH = 780
-local WINDOW_HEIGHT = 540
-local SIDEBAR_WIDTH = 196
-local HEADER_HEIGHT = 70
-local TAB_TILE_HEIGHT = 38
-local CARD_HEIGHT = TOUCH and 58 or 52
-local CARD_HEIGHT_DESC = TOUCH and 76 or 70
-local PROFILE_HEIGHT = 72
+local WINDOW_WIDTH = 800
+local WINDOW_HEIGHT = 560
+local SIDEBAR_WIDTH = 204
+local HEADER_HEIGHT = 72
+local TAB_TILE_HEIGHT = 40
+local CARD_HEIGHT = TOUCH and 58 or 54
+local CARD_HEIGHT_DESC = TOUCH and 76 or 72
+local PROFILE_HEIGHT = 76
 local SEARCH_WIDTH = 196
-local STACK_BELOW = 520
+local STACK_BELOW = 540
 
 local METRICS = {
     Card = {
@@ -1221,8 +1221,8 @@ local function card(tab, className, height)
     end
     local frame = create(className, props)
     frame:SetAttribute("NoDrag", true)
-    corner(frame, UDim.new(0, 9))
-    local frameStroke = stroke(frame, Theme.Stroke, compact and 1 or 0.3)
+    corner(frame, UDim.new(0, 10))
+    local frameStroke = stroke(frame, Theme.Stroke, compact and 1 or 0.26)
     if compact then
         frameStroke:SetAttribute("Hidden", true)
     end
@@ -1436,8 +1436,8 @@ local function rowButton(tab, opts)
         ClipsDescendants = true,
         Parent = button,
     })
-    corner(box, UDim.new(0, 8))
-    local boxStroke = stroke(box, primary and Theme.Accent or Theme.Stroke, primary and 0.35 or 0.25)
+    corner(box, UDim.new(0, 9))
+    local boxStroke = stroke(box, primary and Theme.Accent or Theme.Stroke, primary and 0.32 or 0.22)
 
     local row = create("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
@@ -2145,15 +2145,19 @@ function Tab:Dropdown(opts)
         local height = (#options > 0)
             and (rows * optionH + math.max(rows - 1, 0) * 2 + 12)
             or (optionH + 12)
-        local width = math.max(chip.AbsoluteSize.X / scale, 130)
         local abs = (chip.AbsolutePosition - body.AbsolutePosition) / scale
         local bodyWidth = body.AbsoluteSize.X / scale
         local bodyHeight = body.AbsoluteSize.Y / scale
+        local maxWidth = math.max(bodyWidth - 16, 96)
+        local width = math.min(math.max(chip.AbsoluteSize.X / scale, 130), maxWidth)
+        local maxHeight = math.max(bodyHeight - 16, optionH + 12)
+        height = math.min(height, maxHeight)
         local x = math.clamp(abs.X + chip.AbsoluteSize.X / scale - width, 8, math.max(8, bodyWidth - width - 8))
         local y = abs.Y + chip.AbsoluteSize.Y / scale + 6
         if y + height > bodyHeight - 8 then
-            y = math.max(abs.Y - height - 6, 8)
+            y = abs.Y - height - 6
         end
+        y = math.clamp(y, 8, math.max(8, bodyHeight - height - 8))
 
         local popup = create("Frame", {
             Position = UDim2.fromOffset(x, y),
@@ -2163,7 +2167,7 @@ function Tab:Dropdown(opts)
             ZIndex = 61,
             Parent = overlay,
         })
-        corner(popup, UDim.new(0, 9))
+        corner(popup, UDim.new(0, 10))
         stroke(popup, Theme.Stroke)
 
         local list = create("ScrollingFrame", {
@@ -2494,8 +2498,8 @@ function Tab:Groupbox(opts)
         Parent = side == 1 and set.Left or set.Right,
     })
     box:SetAttribute("NoDrag", true)
-    corner(box, UDim.new(0, 12))
-    stroke(box, Theme.Stroke, 0.22)
+    corner(box, UDim.new(0, 14))
+    stroke(box, Theme.Stroke, 0.2)
     create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Parent = box })
 
     local header = create("TextButton", {
@@ -2896,8 +2900,8 @@ function Library.Window(opts)
         Parent = root,
     })
     self.Body = body
-    corner(body, UDim.new(0, 12))
-    self.BodyStroke = stroke(body, Theme.Stroke, 0.18, 1)
+    corner(body, UDim.new(0, 14))
+    self.BodyStroke = stroke(body, Theme.Stroke, 0.16, 1)
     body.MouseEnter:Connect(function()
         calibratePointer(root)
     end)
@@ -3277,8 +3281,8 @@ function Window:_buildProfile(sidebar)
         AutoButtonColor = false,
         Parent = sidebar,
     })
-    corner(cardFrame, UDim.new(0, 10))
-    local cardStroke = stroke(cardFrame, Theme.Stroke, 0.22)
+    corner(cardFrame, UDim.new(0, 11))
+    local cardStroke = stroke(cardFrame, Theme.Stroke, 0.2)
     local head = create("ImageLabel", {
         AnchorPoint = Vector2.new(0, 0.5),
         Position = UDim2.new(0, 8, 0.5, 0),
