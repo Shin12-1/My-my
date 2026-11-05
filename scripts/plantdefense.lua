@@ -1,5 +1,6 @@
 -- [NEW] Plant Defense RNG
 -- PlaceId 88986563263928 | GameId 10772529417
+-- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
 
@@ -25,6 +26,7 @@ local Library = loadstring(fetch("igkii_lib.lua"))()
 local Remotes = ReplicatedStorage:WaitForChild("Remotes")
 local PlantAction = Remotes:WaitForChild("PlantAction") -- RemoteFunction
 local PlantSync = Remotes:WaitForChild("PlantSync")     -- RemoteEvent
+local Enemies = Remotes:WaitForChild("Enemies")         -- RemoteEvent (FireServer("start") starts a round)
 
 ----------------------------------------------------------------------
 -- State
@@ -215,6 +217,125 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
+-- Auto Start / Restart
+-- Enemies:FireServer("start") starts a round.
+-- A finished round shows up as an Enemies "wave" update with phase = "idle"
+-- (or result = "cleared"), and sometimes a "clear" event right before it.
+----------------------------------------------------------------------
+local autoStart = false
+local START_COOLDOWN = 3
+
+local myPlot = nil          -- e.g. "Plot4"
+local myPhase = "unknown"   -- next / active / idle / unknown
+local lastStart = 0
+local startsSent = 0
+
+local learnFrom = 0         -- os.clock() of the start we fired while learning the plot
+local learnHits = {}
+local learnTries = 0
+
+local function plotFromValue(v)
+    if type(v) == "number" then return "Plot" .. v end
+    if type(v) == "string" and v:match("^Plot%d+$") then return v end
+    return nil
+end
+
+local function findMyPlot()
+    local p = plotFromValue(LocalPlayer:GetAttribute("Plot") or LocalPlayer:GetAttribute("plot"))
+    if p then return p end
+
+    local function isMe(v)
+        return v == LocalPlayer
+            or v == LocalPlayer.Name
+            or v == LocalPlayer.DisplayName
+            or v == LocalPlayer.UserId
+            or v == tostring(LocalPlayer.UserId)
+    end
+
+    for _, inst in ipairs(workspace:GetDescendants()) do
+        if inst.Name:match("^Plot%d+$") then
+            for _, v in pairs(inst:GetAttributes()) do
+                if isMe(v) then return inst.Name end
+            end
+            for _, c in ipairs(inst:GetChildren()) do
+                if c:IsA("ValueBase") and isMe(c.Value) then return inst.Name end
+            end
+        end
+    end
+    return nil
+end
+
+myPlot = findMyPlot()
+
+local function fireStart()
+    lastStart = os.clock()
+    startsSent = startsSent + 1
+    if not myPlot then
+        -- plot unknown: the plot that answers our start with a "next" wave within a moment is ours
+        learnFrom = os.clock()
+        learnHits = {}
+    end
+    pcall(function()
+        Enemies:FireServer("start")
+    end)
+end
+
+table.insert(connections, Enemies.OnClientEvent:Connect(function(action, plot, data)
+    if action ~= "wave" and action ~= "clear" then return end
+
+    -- learning our plot from the reply to our own start
+    if not myPlot then
+        if action == "wave" and type(data) == "table" and data.phase == "next"
+            and learnFrom > 0 and os.clock() - learnFrom < 1 then
+            learnHits[plot] = true
+            local count, only = 0, nil
+            for p in pairs(learnHits) do count = count + 1; only = p end
+            if count == 1 then
+                task.delay(0.5, function()
+                    local c2, o2 = 0, nil
+                    for p in pairs(learnHits) do c2 = c2 + 1; o2 = p end
+                    if not myPlot and c2 == 1 then myPlot = o2 end
+                end)
+            end
+        end
+        return
+    end
+
+    if plot ~= myPlot then return end
+
+    if action == "clear" then
+        myPhase = "idle"
+    elseif type(data) == "table" then
+        if data.phase == "idle" or data.result == "cleared" then
+            myPhase = "idle"
+        elseif data.phase then
+            myPhase = data.phase
+        end
+    end
+end))
+
+task.spawn(function()
+    local lastPlotLookup = 0
+    while running do
+        if autoStart then
+            if not myPlot and os.clock() - lastPlotLookup > 5 then
+                lastPlotLookup = os.clock()
+                myPlot = findMyPlot()
+            end
+            if os.clock() - lastStart >= START_COOLDOWN then
+                if myPhase == "idle" then
+                    fireStart()
+                elseif myPhase == "unknown" and not myPlot and learnTries < 3 then
+                    learnTries = learnTries + 1
+                    fireStart() -- also lets us learn our plot
+                end
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+----------------------------------------------------------------------
 -- UI (igkii lib)
 ----------------------------------------------------------------------
 local Window = Library.Window({ Title = "Plant Defense RNG" })
@@ -222,9 +343,11 @@ local Window = Library.Window({ Title = "Plant Defense RNG" })
 local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
+table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
+    { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -233,6 +356,22 @@ local tab = Window:Tab({
     Icon = "trash",
     PageTitle = "Plants",
     Desc = "Auto delete plants by rarity",
+})
+
+tab:Section("Auto Start")
+tab:Toggle({
+    Name = "Auto Start / Restart",
+    Desc = "Starts the round again as soon as it finishes (after round 30)",
+    Default = false,
+    Callback = function(value)
+        autoStart = value
+        if value then
+            learnTries = 0
+            if myPhase ~= "next" and myPhase ~= "active" then
+                fireStart()
+            end
+        end
+    end,
 })
 
 tab:Section("Auto Delete")
@@ -265,6 +404,7 @@ misc = Window:BuildMisc()
 Window:OnDestroy(function()
     running = false
     autoDelete = false
+    autoStart = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -274,6 +414,7 @@ end)
 env.PDR_UNLOAD = function()
     running = false
     autoDelete = false
+    autoStart = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
