@@ -2,7 +2,6 @@
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
--- Auto Roll: keeps the in-game Auto Roll turned ON
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
 
 local env = (getgenv and getgenv()) or _G
@@ -37,7 +36,7 @@ local CHUNK = 40
 
 local running = true
 local autoDelete = false
-local autoRoll = false -- ADDED
+local autoRoll = false -- [AUTO ROLL ADDED]
 local lastRun = 0
 local deletedTotal = 0
 local connections = {}
@@ -338,7 +337,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
--- Auto Roll (ADDED FEATURE)
+-- [AUTO ROLL ADDED]
 ----------------------------------------------------------------------
 local function forceAutoRoll()
     local pg = LocalPlayer:FindFirstChild("PlayerGui")
@@ -407,12 +406,12 @@ local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
-table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- ADDED
+table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- [AUTO ROLL ADDED]
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
-    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end }, -- ADDED
+    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end }, -- [AUTO ROLL ADDED]
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -439,11 +438,11 @@ tab:Toggle({
     end,
 })
 
--- ADDED: Auto Roll UI
+-- [AUTO ROLL ADDED]
 tab:Section("Auto Roll")
 tab:Toggle({
     Name = "Auto Roll ON",
-    Desc = "If the in-game Auto Roll button turns OFF, this clicks it to turn it back ON.",
+    Desc = "If the in-game Auto Roll turns OFF, this clicks it to turn it back ON.",
     Default = false,
     Callback = function(value)
         autoRoll = value
@@ -481,7 +480,7 @@ Window:OnDestroy(function()
     running = false
     autoDelete = false
     autoStart = false
-    autoRoll = false -- ADDED
+    autoRoll = false -- [AUTO ROLL ADDED]
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -492,7 +491,7 @@ env.PDR_UNLOAD = function()
     running = false
     autoDelete = false
     autoStart = false
-    autoRoll = false -- ADDED
+    autoRoll = false -- [AUTO ROLL ADDED]
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
