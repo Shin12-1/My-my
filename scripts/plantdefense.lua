@@ -2,6 +2,7 @@
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
+-- Auto Roll: keeps the in-game Auto Roll button turned ON
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
 
 local env = (getgenv and getgenv()) or _G
@@ -36,6 +37,8 @@ local CHUNK = 40
 
 local running = true
 local autoDelete = false
+local autoStart = false
+local autoRoll = false -- NEW: Auto Turn On Roll
 local lastRun = 0
 local deletedTotal = 0
 local connections = {}
@@ -52,7 +55,6 @@ local inventory = {} -- list of { id, mutation, count }
 
 ----------------------------------------------------------------------
 -- Inventory tracking
--- Full PlantSync payloads carry the whole `plants` list; partial ones only carry money.
 ----------------------------------------------------------------------
 table.insert(connections, PlantSync.OnClientEvent:Connect(function(data)
     if type(data) == "table" and type(data.plants) == "table" then
@@ -76,7 +78,6 @@ local function findPlants(t, depth, seen)
     return nil
 end
 
--- grab the current inventory from the game's own client state (in case the last full sync was before we loaded)
 task.spawn(function()
     pcall(function()
         local gameUI = LocalPlayer:WaitForChild("PlayerScripts"):WaitForChild("GameUI")
@@ -92,7 +93,7 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
--- Rarity lookup (read from the game at runtime)
+-- Rarity lookup
 ----------------------------------------------------------------------
 local rarityMap = {}
 local lastScan = 0
@@ -116,8 +117,6 @@ end
 
 local function scanRarities()
     lastScan = os.clock()
-
-    -- 1) ModuleScripts that hold plant data
     for _, inst in ipairs(ReplicatedStorage:GetDescendants()) do
         if inst:IsA("ModuleScript") then
             task.spawn(function()
@@ -128,8 +127,6 @@ local function scanRarities()
             end)
         end
     end
-
-    -- 2) instances carrying a Rarity attribute / value
     for _, inst in ipairs(ReplicatedStorage:GetDescendants()) do
         local attr = inst:GetAttribute("Rarity") or inst:GetAttribute("rarity")
         if type(attr) == "string" then
@@ -141,8 +138,7 @@ local function scanRarities()
             end
         end
     end
-
-    task.wait(2) -- let the require threads finish
+    task.wait(2)
 end
 
 ----------------------------------------------------------------------
@@ -151,7 +147,6 @@ end
 local function runDelete()
     if #inventory == 0 then return end
 
-    -- (re)scan when we meet plants we can't place yet (at most once per minute)
     local unknown = false
     for _, e in ipairs(inventory) do
         if e.count and e.count > 0 and not rarityMap[e.id] then
@@ -218,19 +213,14 @@ end)
 
 ----------------------------------------------------------------------
 -- Auto Start / Restart
--- Enemies:FireServer("start") starts a round.
--- A finished round shows up as an Enemies "wave" update with phase = "idle"
--- (or result = "cleared"), and sometimes a "clear" event right before it.
 ----------------------------------------------------------------------
-local autoStart = false
 local START_COOLDOWN = 3
-
-local myPlot = nil          -- e.g. "Plot4"
-local myPhase = "unknown"   -- next / active / idle / unknown
+local myPlot = nil
+local myPhase = "unknown"
 local lastStart = 0
 local startsSent = 0
 
-local learnFrom = 0         -- os.clock() of the start we fired while learning the plot
+local learnFrom = 0
 local learnHits = {}
 local learnTries = 0
 
@@ -271,7 +261,6 @@ local function fireStart()
     lastStart = os.clock()
     startsSent = startsSent + 1
     if not myPlot then
-        -- plot unknown: the plot that answers our start with a "next" wave within a moment is ours
         learnFrom = os.clock()
         learnHits = {}
     end
@@ -283,7 +272,6 @@ end
 table.insert(connections, Enemies.OnClientEvent:Connect(function(action, plot, data)
     if action ~= "wave" and action ~= "clear" then return end
 
-    -- learning our plot from the reply to our own start
     if not myPlot then
         if action == "wave" and type(data) == "table" and data.phase == "next"
             and learnFrom > 0 and os.clock() - learnFrom < 1 then
@@ -327,11 +315,87 @@ task.spawn(function()
                     fireStart()
                 elseif myPhase == "unknown" and not myPlot and learnTries < 3 then
                     learnTries = learnTries + 1
-                    fireStart() -- also lets us learn our plot
+                    fireStart()
                 end
             end
         end
         task.wait(0.5)
+    end
+end)
+
+----------------------------------------------------------------------
+-- Auto Roll Toggle (Finds the button and clicks if OFF)
+----------------------------------------------------------------------
+local function forceAutoRoll()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+
+    for _, v in ipairs(pg:GetDescendants()) do
+        local isOffText = false
+        local button = nil
+
+        -- Check if we found the "OFF" text
+        if v:IsA("TextLabel") and v.Text:upper() == "OFF" then
+            isOffText = true
+            button = v.Parent
+        elseif v:IsA("TextButton") and v.Text:upper() == "OFF" then
+            isOffText = true
+            button = v
+        end
+
+        if isOffText and button and (button:IsA("TextButton") or button:IsA("ImageButton")) then
+            local isAutoRoll = false
+            
+            -- Check if the button itself has Auto/Roll in the name
+            if string.find(button.Name:upper(), "AUTO") or string.find(button.Name:upper(), "ROLL") then
+                isAutoRoll = true
+            end
+            
+            -- Check parents for Auto/Roll
+            local parent = button.Parent
+            while parent and parent ~= pg do
+                if string.find(parent.Name:upper(), "AUTO") or string.find(parent.Name:upper(), "ROLL") then
+                    isAutoRoll = true
+                    break
+                end
+                parent = parent.Parent
+            end
+
+            -- Check sibling text for "AUTO ROLL" (as seen in your screenshot)
+            if button.Parent then
+                for _, sib in ipairs(button.Parent:GetChildren()) do
+                    if sib:IsA("TextLabel") and string.find(sib.Text:upper(), "AUTO ROLL") then
+                        isAutoRoll = true
+                        break
+                    end
+                end
+            end
+
+            -- If we found the Auto Roll button and it's OFF, click it!
+            if isAutoRoll then
+                print("[PlantDefense] Auto Roll was OFF. Turning it ON.")
+                pcall(function()
+                    if button:IsA("TextButton") then
+                        firesignal(button.MouseButton1Click)
+                    else
+                        -- Fallback for ImageButton
+                        local vim = game:GetService("VirtualInputManager")
+                        local pos = button.AbsolutePosition + (button.AbsoluteSize / 2)
+                        vim:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
+                        vim:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 1)
+                    end
+                end)
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while running do
+        if autoRoll then
+            pcall(forceAutoRoll)
+        end
+        task.wait(1) -- Checks once per second. If it sees OFF, it flips it ON.
     end
 end)
 
@@ -344,10 +408,12 @@ local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
+table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end })
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
+    { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end },
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -355,7 +421,7 @@ local tab = Window:Tab({
     Name = "Plants",
     Icon = "trash",
     PageTitle = "Plants",
-    Desc = "Auto delete plants by rarity",
+    Desc = "Auto delete plants by rarity & Auto Roll",
 })
 
 tab:Section("Auto Start")
@@ -374,6 +440,16 @@ tab:Toggle({
     end,
 })
 
+tab:Section("Auto Roll")
+tab:Toggle({
+    Name = "Keep Auto Roll ON",
+    Desc = "Monitors the in-game Auto Roll button. If it catches it OFF, it turns it back ON.",
+    Default = false,
+    Callback = function(value)
+        autoRoll = value
+    end,
+})
+
 tab:Section("Auto Delete")
 tab:Toggle({
     Name = "Auto Delete (every 10s)",
@@ -382,7 +458,7 @@ tab:Toggle({
     Callback = function(value)
         autoDelete = value
         if value then
-            lastRun = 0 -- run right away
+            lastRun = 0
         end
     end,
 })
@@ -405,6 +481,7 @@ Window:OnDestroy(function()
     running = false
     autoDelete = false
     autoStart = false
+    autoRoll = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -415,10 +492,11 @@ env.PDR_UNLOAD = function()
     running = false
     autoDelete = false
     autoStart = false
+    autoRoll = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
     pcall(function() Window:Destroy() end)
-end
+end)
 
 Window:PlayIntro()
