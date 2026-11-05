@@ -37,6 +37,7 @@ local CHUNK = 40
 
 local running = true
 local autoDelete = false
+local autoStart = false
 local autoRoll = false -- NEW: Auto Roll state
 local lastRun = 0
 local deletedTotal = 0
@@ -398,7 +399,7 @@ local misc
 local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
-table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- Added Feature
+table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end }) -- Added Auto Roll
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
@@ -434,7 +435,7 @@ tab:Toggle({
 tab:Section("Auto Roll")
 tab:Toggle({
     Name = "Keep Auto Roll ON",
-    Desc = "If the in-game Auto Roll button turns OFF, this flips it back ON.",
+    Desc = "If the in-game Auto Roll turns OFF, this flips it back ON.",
     Default = false,
     Callback = function(value)
         autoRoll = value
