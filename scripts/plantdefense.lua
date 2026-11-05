@@ -463,7 +463,6 @@ end)
 ----------------------------------------------------------------------
 local Window = Library.Window({ Title = "Plant Defense RNG" })
 
-local misc
 local features = Library.MiscFeatures(function()
     return misc
 end)
@@ -491,6 +490,7 @@ tab:Toggle({
     Name = "Auto Start / Restart",
     Desc = "Starts the round again as soon as it finishes (after round 30)",
     Default = false,
+    Get = function() return autoStart end,
     Callback = function(value)
         autoStart = value
         if value then
@@ -507,6 +507,7 @@ tab:Toggle({
     Name = "Auto Roll ON",
     Desc = "If the in-game Auto Roll turns OFF, this clicks it to turn it back ON.",
     Default = false,
+    Get = function() return autoRoll end,
     Callback = function(value)
         autoRoll = value
     end,
@@ -517,6 +518,7 @@ tab:Toggle({
     Name = "Auto Delete (every 10s)",
     Desc = "Deletes the selected rarities, including every mutation",
     Default = false,
+    Get = function() return autoDelete end,
     Callback = function(value)
         autoDelete = value
         if value then
@@ -531,6 +533,7 @@ for _, rarity in ipairs({ "Common", "Uncommon", "Rare", "Epic", "Legendary" }) d
         Name = rarity,
         Desc = "Delete " .. rarity .. " plants (all mutations)",
         Default = true,
+        Get = function() return selected[rarity:lower()] end,
         Callback = function(value)
             selected[rarity:lower()] = value
         end,
@@ -569,6 +572,6 @@ env.PDR_UNLOAD = function()
     pcall(function()
         Window:Destroy()
     end)
-end)
+end
 
 Window:PlayIntro()
