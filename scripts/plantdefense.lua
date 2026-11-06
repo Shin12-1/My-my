@@ -1,7 +1,7 @@
 -- [NEW] Plant Defense RNG
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
--- Auto Buy Potions: PlantAction shopBuy once per shop cycle (every 5 minutes)
+-- Auto Buy Potions: PlantAction shopBuy on the potion slots every restock (5 min) until sold out
 -- Auto Roll: clicks the Auto Roll button when it shows OFF
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
@@ -526,40 +526,87 @@ end)
 ----------------------------------------------------------------------
 -- Auto Buy Potions
 -- PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
--- cycle = the shop's restock number; your three captured buys (5979797 / 5979896 / 5979915)
--- are server time / 300 (a new one every 5 minutes), so we buy once per cycle.
+-- Gus's Market has 3 slots: 1 = plant, 2 and 3 = potions (Money / Speed / Lucky).
+-- cycle = the shop restock number (server time / 300, a new one every 5 minutes).
+-- Each potion slot has limited stock ("2 LEFT", "LAST ONE"), so every restock we keep
+-- buying a slot until the server refuses (SOLD OUT).
 ----------------------------------------------------------------------
-local POTION_SLOTS = { 3 } -- shop slot(s) to buy every cycle (3 = the slot from your captured buys)
+local POTION_SLOTS = { 2, 3 }  -- potion slots only (slot 1 is the plant)
+local MAX_PER_SLOT = 10        -- safety cap per slot per restock
+
 local autoPotion = false
-local potionTries = {}
 local potionsBought = 0
+local potionOffset = 0         -- learned difference between our cycle number and the server's (0, -1 or 1)
+local potionState = {}         -- [cycle:slot] = { done, fails, nextTry }
 
-local function buyPotions()
-    local base = math.floor(workspace:GetServerTimeNow() / 300)
-    if (potionTries[base] or 0) >= 3 then return end
-    potionTries[base] = (potionTries[base] or 0) + 1
+local function shopBuy(slot, cycle)
+    local ok, a = pcall(function()
+        return PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
+    end)
+    if not ok or a == nil or a == false or type(a) == "string" then
+        return false
+    end
+    if type(a) == "table" and (a.ok == false or a.success == false or a[1] == false) then
+        return false
+    end
+    return true
+end
 
-    for _, slot in ipairs(POTION_SLOTS) do
-        for _, cycle in ipairs({ base, base - 1, base + 1 }) do
-            local ok, a = pcall(function()
-                return PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
-            end)
-            if ok and a ~= nil and a ~= false and type(a) ~= "string" then
-                potionsBought = potionsBought + 1
-                potionTries[base] = 3 -- done for this cycle
-                break
-            end
-            task.wait(0.3)
+local function buySlot(slot, base)
+    local key = base .. ":" .. slot
+    local st = potionState[key]
+    if not st then
+        st = { done = false, fails = 0, nextTry = 0 }
+        potionState[key] = st
+    end
+    if st.done or st.fails >= 4 or os.clock() < st.nextTry then return end
+
+    -- first buy: find the cycle number the server accepts (learned offset first)
+    local offsets, seen = {}, {}
+    for _, off in ipairs({ potionOffset, 0, -1, 1 }) do
+        if not seen[off] then
+            seen[off] = true
+            offsets[#offsets + 1] = off
         end
+    end
+
+    local cycle, bought = nil, 0
+    for _, off in ipairs(offsets) do
+        if shopBuy(slot, base + off) then
+            potionOffset = off
+            cycle = base + off
+            bought = 1
+            break
+        end
+        task.wait(0.25)
+    end
+
+    if cycle then
+        -- keep buying until the server refuses (sold out)
+        while bought < MAX_PER_SLOT and running and autoPotion do
+            task.wait(0.3)
+            if not shopBuy(slot, cycle) then break end
+            bought = bought + 1
+        end
+        st.done = true
+        potionsBought = potionsBought + bought
+    else
+        -- nothing bought: sold out already, not enough money, or wrong cycle -> try again in 30s (max 4 times)
+        st.fails = st.fails + 1
+        st.nextTry = os.clock() + 30
     end
 end
 
 task.spawn(function()
     while running do
         if autoPotion then
-            pcall(buyPotions)
+            local base = math.floor(workspace:GetServerTimeNow() / 300)
+            for _, slot in ipairs(POTION_SLOTS) do
+                if not (running and autoPotion) then break end
+                pcall(buySlot, slot, base)
+            end
         end
-        task.wait(5)
+        task.wait(3)
     end
 end)
 
@@ -622,12 +669,12 @@ tab:Toggle({
 tab:Section("Shop")
 tab:Toggle({
     Name = "Auto Buy Potions",
-    Desc = "Buys the potion every shop restock (every 5 minutes)",
+    Desc = "Buys the potions (slots 2 and 3) every restock until they are sold out",
     Default = false,
     Callback = function(value)
         autoPotion = value
         if value then
-            potionTries = {}
+            potionState = {}
         end
     end,
 })
