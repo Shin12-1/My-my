@@ -1,6 +1,8 @@
 -- [NEW] Plant Defense RNG
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
+-- Auto Claim Playtime Gifts: PlantAction "playtimeGift" 1-6
+-- Auto Use Potions: PlantAction "usePotion" (Money / Damage / Luck / Speed, picked from a dropdown)
 -- Auto Buy Potions: PlantAction shopBuy on the potion slots every restock (5 min) until sold out
 -- Auto Roll: clicks the Auto Roll button when it shows OFF
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
@@ -526,12 +528,12 @@ end)
 ----------------------------------------------------------------------
 -- Auto Buy Potions
 -- PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
--- Gus's Market has 3 slots: 1 = plant, 2 and 3 = potions (Money / Speed / Lucky).
+-- Gus's Market has 3 slots (1, 2, 3); all three are bought every restock.
 -- cycle = the shop restock number (server time / 300, a new one every 5 minutes).
--- Each potion slot has limited stock ("2 LEFT", "LAST ONE"), so every restock we keep
+-- Each slot has limited stock ("2 LEFT", "LAST ONE"), so every restock we keep
 -- buying a slot until the server refuses (SOLD OUT).
 ----------------------------------------------------------------------
-local POTION_SLOTS = { 2, 3 }  -- potion slots only (slot 1 is the plant)
+local POTION_SLOTS = { 1, 2, 3 }  -- buy all three shop slots
 local MAX_PER_SLOT = 10        -- safety cap per slot per restock
 
 local autoPotion = false
@@ -611,6 +613,93 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
+-- Auto Claim Playtime Gifts
+-- PlantAction:InvokeServer("playtimeGift", index)  (6 gifts: 2, 5, 10, 15, 25, 40 min)
+----------------------------------------------------------------------
+local GIFT_COUNT = 6
+local autoGift = false
+local giftClaimed = {}   -- [index] = true once the server accepted it
+local giftNextTry = {}   -- [index] = os.clock() for the next attempt
+local giftsClaimed = 0
+
+local function claimGifts()
+    for i = 1, GIFT_COUNT do
+        if not (running and autoGift) then break end
+        if not giftClaimed[i] and os.clock() >= (giftNextTry[i] or 0) then
+            local ok, a = pcall(function()
+                return PlantAction:InvokeServer("playtimeGift", i)
+            end)
+            if ok and a ~= nil and a ~= false and type(a) ~= "string"
+                and not (type(a) == "table" and (a.ok == false or a.success == false or a[1] == false)) then
+                giftClaimed[i] = true
+                giftsClaimed = giftsClaimed + 1
+            else
+                giftNextTry[i] = os.clock() + 20 -- not unlocked yet (or already claimed): ask again later
+            end
+            task.wait(0.4)
+        end
+    end
+end
+
+task.spawn(function()
+    while running do
+        if autoGift then
+            pcall(claimGifts)
+        end
+        task.wait(5)
+    end
+end)
+
+----------------------------------------------------------------------
+-- Auto Use Potions
+-- PlantAction:InvokeServer("usePotion", "Money" | "Damage" | "Luck" | "Speed")
+-- Potions last 15 minutes, so each selected potion is used again about every 15 minutes.
+----------------------------------------------------------------------
+local POTION_NAMES = { "Money", "Damage", "Luck", "Speed" }
+local POTION_DURATION = 15 * 60 + 5
+
+local autoUsePotion = false
+local potionSelected = { Money = true, Damage = true, Luck = true, Speed = true }
+local potionNextUse = {}
+local potionsUsed = 0
+
+local function usePotions()
+    for _, name in ipairs(POTION_NAMES) do
+        if not (running and autoUsePotion) then break end
+        if potionSelected[name] and os.clock() >= (potionNextUse[name] or 0) then
+            local ok, a = pcall(function()
+                return PlantAction:InvokeServer("usePotion", name)
+            end)
+            if ok and a ~= nil and a ~= false and type(a) ~= "string"
+                and not (type(a) == "table" and (a.ok == false or a.success == false or a[1] == false)) then
+                potionsUsed = potionsUsed + 1
+                potionNextUse[name] = os.clock() + POTION_DURATION
+            else
+                potionNextUse[name] = os.clock() + 30 -- still active or none owned: try again soon
+            end
+            task.wait(0.5)
+        end
+    end
+end
+
+task.spawn(function()
+    while running do
+        if autoUsePotion then
+            pcall(usePotions)
+        end
+        task.wait(3)
+    end
+end)
+
+-- dropdown value (the lib's Dropdown is single-select): "All" or one potion name
+local function selectPotion(value)
+    for _, name in ipairs(POTION_NAMES) do
+        potionSelected[name] = (value == "All") or (value == name)
+    end
+    potionNextUse = {}
+end
+
+----------------------------------------------------------------------
 -- UI (igkii lib)
 ----------------------------------------------------------------------
 local Window = Library.Window({ Title = "Plant Defense RNG" })
@@ -621,12 +710,16 @@ table.insert(features, { Name = "Auto Delete", Get = function() return autoDelet
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
 table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end })
 table.insert(features, { Name = "Auto Buy Potions", Get = function() return autoPotion end })
+table.insert(features, { Name = "Auto Claim Gifts", Get = function() return autoGift end })
+table.insert(features, { Name = "Auto Use Potions", Get = function() return autoUsePotion end })
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
     { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end },
     { Title = "Auto Buy Potions", Get = function() return autoPotion and "ON" or "OFF" end },
+    { Title = "Auto Claim Gifts", Get = function() return autoGift and "ON" or "OFF" end },
+    { Title = "Auto Use Potions", Get = function() return autoUsePotion and "ON" or "OFF" end },
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -669,7 +762,7 @@ tab:Toggle({
 tab:Section("Shop")
 tab:Toggle({
     Name = "Auto Buy Potions",
-    Desc = "Buys the potions (slots 2 and 3) every restock until they are sold out",
+    Desc = "Buys shop slots 1, 2 and 3 every restock until they are sold out",
     Default = false,
     Callback = function(value)
         autoPotion = value
@@ -677,6 +770,40 @@ tab:Toggle({
             potionState = {}
         end
     end,
+})
+
+tab:Section("Playtime Gifts")
+tab:Toggle({
+    Name = "Auto Claim Playtime Gifts",
+    Desc = "Claims every playtime gift as soon as it unlocks",
+    Default = false,
+    Callback = function(value)
+        autoGift = value
+        if value then
+            giftNextTry = {}
+        end
+    end,
+})
+
+tab:Section("Potions")
+tab:Toggle({
+    Name = "Auto Use Potions",
+    Desc = "Uses the potions picked below, again every 15 minutes",
+    Default = false,
+    Callback = function(value)
+        autoUsePotion = value
+        if value then
+            potionNextUse = {}
+        end
+    end,
+})
+
+tab:Dropdown({
+    Name = "Potion to use",
+    Desc = "All, or just one potion",
+    Options = { "All", "Money", "Damage", "Luck", "Speed" },
+    Default = "All",
+    Callback = selectPotion,
 })
 
 tab:Section("Auto Delete")
@@ -712,6 +839,8 @@ Window:OnDestroy(function()
     autoStart = false
     autoRoll = false
     autoPotion = false
+    autoGift = false
+    autoUsePotion = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -724,6 +853,8 @@ env.PDR_UNLOAD = function()
     autoStart = false
     autoRoll = false
     autoPotion = false
+    autoGift = false
+    autoUsePotion = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
