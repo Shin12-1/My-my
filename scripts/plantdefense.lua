@@ -1,6 +1,7 @@
 -- [NEW] Plant Defense RNG
 -- PlaceId 88986563263928 | GameId 10772529417
 -- Auto Start: fires Enemies "start" again whenever the round finishes (idle / cleared)
+-- Auto Buy Potions: PlantAction shopBuy once per shop cycle (every 5 minutes)
 -- Auto Roll: clicks the Auto Roll button when it shows OFF
 -- Auto Delete: deletes Common / Uncommon / Rare / Epic / Legendary plants (every mutation) every 10 seconds
 -- Loaded by loader.lua (env.IGKII_FETCH is set by the loader)
@@ -401,11 +402,83 @@ local function autoRollState(title)
 end
 
 local ENDED = { ["VICTORY!"] = true, ["VICTORY"] = true, ["DEFEAT"] = true, ["DEFEAT!"] = true, ["GAME OVER"] = true }
+local START_LABELS = { ["START"] = true, ["START WAVE"] = true, ["START WAVES"] = true, ["START ROUND"] = true, ["START GAME"] = true }
+
+-- nearest clickable button: the object itself or one of its ancestors
+local function buttonOf(obj)
+    local cur = obj
+    for _ = 1, 5 do
+        if not cur or cur == PlayerGui then break end
+        if cur:IsA("GuiButton") then return cur end
+        cur = cur.Parent
+    end
+    return nil
+end
+
+-- press a GUI element, trying several methods until it disappears:
+-- 1) real mouse click  2) fire the button's connections  3) select it and press Enter
+local function pressGui(obj)
+    pcall(clickGui, obj)
+    task.wait(0.5)
+    if not isShown(obj) then return true end
+
+    local btn = buttonOf(obj)
+    if btn and getconnections then
+        for _, sig in ipairs({ "Activated", "MouseButton1Click", "MouseButton1Down", "MouseButton1Up" }) do
+            pcall(function()
+                for _, c in ipairs(getconnections(btn[sig])) do
+                    pcall(function() c:Fire() end)
+                end
+            end)
+        end
+        task.wait(0.5)
+        if not isShown(obj) then return true end
+    end
+
+    if btn then
+        pcall(function()
+            GuiService.SelectedObject = btn
+            task.wait(0.1)
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            task.wait(0.1)
+            GuiService.SelectedObject = nil
+        end)
+        task.wait(0.5)
+    end
+    return not isShown(obj)
+end
+
+-- after a finished round: close the popup (Continue), then start again (a few tries, stops once a wave arrives)
+local roundBusy = false
+local function restartRound(continueLbl)
+    if roundBusy then return end
+    roundBusy = true
+    task.spawn(function()
+        if continueLbl and isShown(continueLbl) then
+            pressGui(continueLbl)
+            task.wait(1)
+        end
+        myPhase = "idle"
+        for i = 1, 3 do
+            if not running or not autoStart then break end
+            if i > 1 then
+                task.wait(3)
+                if myPlot and myPhase ~= "idle" then break end -- a new wave started
+            end
+            if os.clock() - lastStart >= 2 then
+                fireStart()
+            end
+        end
+        roundBusy = false
+    end)
+end
 
 task.spawn(function()
     while running do
         if autoStart or autoRoll then
-            local ended, continueLbl, rollTitle
+            local ended, continueLbl, rollTitle, startLbl
             for _, d in ipairs(PlayerGui:GetDescendants()) do
                 if d:IsA("TextLabel") or d:IsA("TextButton") then
                     local raw = d.Text
@@ -417,22 +490,23 @@ task.spawn(function()
                             if isShown(d) then continueLbl = d end
                         elseif n == "AUTO ROLL" then
                             if isShown(d) then rollTitle = d end
+                        elseif START_LABELS[n] then
+                            if isShown(d) then startLbl = d end
                         end
                     end
                 end
             end
 
-            -- round finished: close the popup, then start again
-            if autoStart and ended and os.clock() - lastEnd > 4 then
+            -- round finished (VICTORY / DEFEAT popup, or just its Continue button is on screen)
+            if autoStart and (ended or continueLbl) and not roundBusy and os.clock() - lastEnd > 4 then
                 lastEnd = os.clock()
-                if continueLbl then
-                    pcall(clickGui, continueLbl)
-                    task.wait(1.5)
-                end
+                restartRound(continueLbl)
+            elseif autoStart and startLbl and not roundBusy and os.clock() - lastStart >= START_COOLDOWN then
+                -- a Start button is showing: the round is not running
                 myPhase = "idle"
-                if os.clock() - lastStart >= START_COOLDOWN then
-                    fireStart()
-                end
+                lastStart = os.clock()
+                pcall(pressGui, startLbl)
+                fireStart()
             end
 
             -- auto roll: click the button when it shows OFF
@@ -450,6 +524,46 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------------
+-- Auto Buy Potions
+-- PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
+-- cycle = the shop's restock number; your three captured buys (5979797 / 5979896 / 5979915)
+-- are server time / 300 (a new one every 5 minutes), so we buy once per cycle.
+----------------------------------------------------------------------
+local POTION_SLOTS = { 3 } -- shop slot(s) to buy every cycle (3 = the slot from your captured buys)
+local autoPotion = false
+local potionTries = {}
+local potionsBought = 0
+
+local function buyPotions()
+    local base = math.floor(workspace:GetServerTimeNow() / 300)
+    if (potionTries[base] or 0) >= 3 then return end
+    potionTries[base] = (potionTries[base] or 0) + 1
+
+    for _, slot in ipairs(POTION_SLOTS) do
+        for _, cycle in ipairs({ base, base - 1, base + 1 }) do
+            local ok, a = pcall(function()
+                return PlantAction:InvokeServer("shopBuy", slot, cycle, 0)
+            end)
+            if ok and a ~= nil and a ~= false and type(a) ~= "string" then
+                potionsBought = potionsBought + 1
+                potionTries[base] = 3 -- done for this cycle
+                break
+            end
+            task.wait(0.3)
+        end
+    end
+end
+
+task.spawn(function()
+    while running do
+        if autoPotion then
+            pcall(buyPotions)
+        end
+        task.wait(5)
+    end
+end)
+
+----------------------------------------------------------------------
 -- UI (igkii lib)
 ----------------------------------------------------------------------
 local Window = Library.Window({ Title = "Plant Defense RNG" })
@@ -459,11 +573,13 @@ local features = Library.MiscFeatures(function() return misc end)
 table.insert(features, { Name = "Auto Delete", Get = function() return autoDelete end })
 table.insert(features, { Name = "Auto Start", Get = function() return autoStart end })
 table.insert(features, { Name = "Auto Roll", Get = function() return autoRoll end })
+table.insert(features, { Name = "Auto Buy Potions", Get = function() return autoPotion end })
 
 Window:BuildHome(features, {
     { Title = "Auto Delete", Get = function() return autoDelete and "ON" or "OFF" end },
     { Title = "Auto Start", Get = function() return autoStart and "ON" or "OFF" end },
     { Title = "Auto Roll", Get = function() return autoRoll and "ON" or "OFF" end },
+    { Title = "Auto Buy Potions", Get = function() return autoPotion and "ON" or "OFF" end },
     { Title = "Plants Deleted", Get = function() return tostring(deletedTotal) end },
 }, { Tier = "Free" })
 
@@ -503,6 +619,19 @@ tab:Toggle({
     end,
 })
 
+tab:Section("Shop")
+tab:Toggle({
+    Name = "Auto Buy Potions",
+    Desc = "Buys the potion every shop restock (every 5 minutes)",
+    Default = false,
+    Callback = function(value)
+        autoPotion = value
+        if value then
+            potionTries = {}
+        end
+    end,
+})
+
 tab:Section("Auto Delete")
 tab:Toggle({
     Name = "Auto Delete (every 10s)",
@@ -535,6 +664,7 @@ Window:OnDestroy(function()
     autoDelete = false
     autoStart = false
     autoRoll = false
+    autoPotion = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
@@ -546,6 +676,7 @@ env.PDR_UNLOAD = function()
     autoDelete = false
     autoStart = false
     autoRoll = false
+    autoPotion = false
     for _, c in ipairs(connections) do
         pcall(function() c:Disconnect() end)
     end
