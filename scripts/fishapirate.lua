@@ -13,6 +13,7 @@ local lp      = Players.LocalPlayer
 local Remotes   = RS:WaitForChild("Remotes")
 local Action    = Remotes:WaitForChild("Action")
 local Notify    = Remotes:WaitForChild("Notify")
+local State     = Remotes:WaitForChild("State")
 local Halloween = Remotes:WaitForChild("Halloween", 5)
 
 ----------------------------------------------------------------
@@ -26,8 +27,7 @@ local Config = {
 	},
 	Islands = {},
 	MaxIsland = 22,
-	SlotCount = 30,
-	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
+	SlotCount = 34,        -- your unlocked plots (max 40); raise it when you unlock more
 
 	AutoBuy     = false,
 	AutoCollect = false,
@@ -36,9 +36,9 @@ local Config = {
 	AutoCompass = false,
 	AutoPumpkin = false,
 
-	BuyDelay     = 0.35,
+	BuyDelay     = 0.3,
 	CollectDelay = 5,
-	PlaceDelay   = 1,
+	PlaceDelay   = 1.5,
 	OpenDelay    = 1,
 }
 for i = 1, Config.MaxIsland do Config.Islands[i] = false end
@@ -57,12 +57,19 @@ local function act(...)
 	return ok, res
 end
 
-local function selectedIslands()
-	local t = {}
-	for i = 1, Config.MaxIsland do
-		if Config.Islands[i] then t[#t + 1] = i end
-	end
-	return t
+local function anyOn(map)
+	for _, v in pairs(map) do if v then return true end end
+	return false
+end
+
+local function mutationOk(m)
+	if not anyOn(Config.Mutations) then return true end
+	return Config.Mutations[m] == true
+end
+
+local function islandOk(i)
+	if not anyOn(Config.Islands) then return true end
+	return Config.Islands[tonumber(i)] == true
 end
 
 local function selectedMutations()
@@ -73,52 +80,26 @@ local function selectedMutations()
 	return t
 end
 
--- same payload the game's own "Auto Stop" sends
-local function pushStopOn()
-	local islands, muts = {}, {}
-	for _, i in ipairs(selectedIslands()) do islands[tostring(i)] = true end
-	for _, m in ipairs(selectedMutations()) do
-		if m ~= "Celestial" then muts[m] = true end
+local function selectedIslands()
+	local t = {}
+	for i = 1, Config.MaxIsland do
+		if Config.Islands[i] then t[#t + 1] = i end
 	end
-	act("CurrentSettings", "stopOn", {
-		islands   = islands,
-		on        = true,
-		celestial = Config.Mutations.Celestial == true,
-		muts      = muts,
-	})
-end
-
-local pending = false
-local function syncSettings()
-	if pending then return end
-	pending = true
-	task.delay(0.4, function()
-		pending = false
-		if alive then pushStopOn() end
-	end)
+	return t
 end
 
 local function SetMutation(name, state)
-	if Config.Mutations[name] == nil then return end
-	Config.Mutations[name] = state and true or false
-	syncSettings()
+	if Config.Mutations[name] ~= nil then Config.Mutations[name] = state and true or false end
 end
-
 local function SetIsland(n, state)
 	n = tonumber(n)
-	if not n or Config.Islands[n] == nil then return end
-	Config.Islands[n] = state and true or false
-	syncSettings()
+	if n and Config.Islands[n] ~= nil then Config.Islands[n] = state and true or false end
 end
-
 local function SetAllMutations(state)
 	for m in pairs(Config.Mutations) do Config.Mutations[m] = state end
-	syncSettings()
 end
-
 local function SetAllIslands(state)
 	for i = 1, Config.MaxIsland do Config.Islands[i] = state end
-	syncSettings()
 end
 
 local function loop(flag, delay, fn)
@@ -130,7 +111,6 @@ local function loop(flag, delay, fn)
 	end)
 end
 
--- touch a part / model with the character
 local function touch(hrp, target)
 	local parts = target:IsA("Model") and target:GetDescendants() or { target }
 	for _, p in ipairs(parts) do
@@ -143,7 +123,7 @@ local function touch(hrp, target)
 	end
 end
 
--- one teleport at a time: go, do the job, return to where you were
+-- one teleport at a time (compass / pumpkin): go, do the job, return
 local tpBusy = false
 local function runTp(fn)
 	while tpBusy and alive do task.wait(0.1) end
@@ -164,92 +144,93 @@ local function tpTo(hrp, pos)
 end
 
 ----------------------------------------------------------------
--- AUTO BUY
+-- GAME STATE (from Remotes.State: chestOffer, slots, hotbar, slotsOwned)
 ----------------------------------------------------------------
+local S = {}
+conns[#conns + 1] = State.OnClientEvent:Connect(function(payload)
+	if type(payload) == "table" then
+		for k, v in pairs(payload) do S[k] = v end
+	end
+end)
+
+local function slotLimit()
+	local owned = tonumber(S.slotsOwned)
+	local n = Config.SlotCount
+	if owned and owned < n then n = owned end
+	return n
+end
+
+----------------------------------------------------------------
+-- AUTO BUY (remote only, buys the chest on offer if it matches your picks)
+----------------------------------------------------------------
+local lastBought
+
 task.spawn(function()
 	while alive do
 		if Config.AutoBuy then
-			local islands = selectedIslands()
-			if #islands == 0 then
-				task.wait(1)
-			else
-				for _, i in ipairs(islands) do
-					if not (alive and Config.AutoBuy) then break end
-					act("Buy", i, nil)
-					task.wait(Config.BuyDelay)
-				end
+			local offer = S.chestOffer
+			if type(offer) == "table" and offer.uid and offer.uid ~= lastBought
+				and mutationOk(offer.mutation) and islandOk(offer.island) then
+				lastBought = offer.uid
+				act("Buy", offer.uid)
 			end
-		else
-			task.wait(0.5)
 		end
+		task.wait(Config.BuyDelay)
 	end
 end)
 
 ----------------------------------------------------------------
--- AUTO COLLECT (teleports to Plots.<yourplot>.CollectPads.PadAll.Top)
+-- AUTO COLLECT (remote only, works for whatever plot you have)
 ----------------------------------------------------------------
-local function ownPlot()
-	local plots = workspace:FindFirstChild("Plots")
-	if not plots then return end
-	for _, p in ipairs(plots:GetChildren()) do
-		for _, v in pairs(p:GetAttributes()) do
-			if v == lp.Name or v == lp.UserId or v == lp.DisplayName then return p end
-		end
-	end
-	return plots:FindFirstChild(Config.PlotName)
-end
-
-local function collectTop()
-	local plot = ownPlot()
-	local pads = plot and plot:FindFirstChild("CollectPads")
-	local pad  = pads and pads:FindFirstChild("PadAll")
-	return pad and pad:FindFirstChild("Top")
-end
-
 loop("AutoCollect", "CollectDelay", function()
-	local top = collectTop()
-	if not top then
-		act("Collect", "all")
-		return
-	end
-	runTp(function(hrp)
-		tpTo(hrp, top.Position)
-		task.wait(0.15)
-		touch(hrp, top)
-		task.wait(0.15)
-		act("Collect", "all")
-		task.wait(0.1)
-	end)
+	act("Collect", "all")
 end)
 
 ----------------------------------------------------------------
--- AUTO OPEN
+-- AUTO OPEN (all slots at once; server only accepts ones whose timer ended)
 ----------------------------------------------------------------
 loop("AutoOpen", "OpenDelay", function()
-	for slot = 1, Config.SlotCount do
-		if not (alive and Config.AutoOpen) then break end
-		act("Open", slot, nil)
-		task.wait(0.05)
+	for slot = 1, slotLimit() do
+		local entry = type(S.slots) == "table" and S.slots[slot]
+		if not (entry and entry.kind == "char") then
+			task.spawn(act, "Open", slot)
+		end
 	end
 end)
 
 ----------------------------------------------------------------
--- AUTO PLACE
+-- AUTO PLACE (uses the matching chests in your hotbar, slots 1..SlotCount)
 ----------------------------------------------------------------
-loop("AutoPlace", "PlaceDelay", function()
-	local islands, muts = selectedIslands(), selectedMutations()
-	if #islands == 0 or #muts == 0 then return end
-	for slot = 1, Config.SlotCount do
-		local placed = false
-		for _, i in ipairs(islands) do
-			for _, m in ipairs(muts) do
-				if not (alive and Config.AutoPlace) then return end
-				local ok, res = act("PlaceChest", ("chest:%d:%s"):format(i, m), slot)
-				task.wait(0.03)
-				if ok and res == true then placed = true break end
+local function pickChestKey()
+	if type(S.hotbar) ~= "table" then return end
+	for _, item in ipairs(S.hotbar) do
+		local k = item.k
+		if type(k) == "string" and k:sub(1, 6) == "chest:" and (item.n or 1) > 0 then
+			local island, mut = k:match("^chest:(%d+):(%w+)")
+			if island and mutationOk(mut) and islandOk(island) then
+				return k, item
 			end
-			if placed then break end
 		end
+	end
+end
+
+loop("AutoPlace", "PlaceDelay", function()
+	for slot = 1, slotLimit() do
+		if not (alive and Config.AutoPlace) then return end
+		local key, item = pickChestKey()
+		if not key then return end
+
+		local ok, res = act("PlaceChest", key, slot)
+		if not (ok and res == true) then
+			-- slot still holds a unit: take it out first, then place
+			act("Collect", slot)
+			task.wait(0.2)
+			ok, res = act("PlaceChest", key, slot)
+		end
+		if ok and res == true then
+			item.n = (item.n or 1) - 1   -- local count until State refreshes
+		end
+		task.wait(0.05)
 	end
 end)
 
@@ -388,7 +369,7 @@ end
 local function islandText()
 	local t = {}
 	for _, i in ipairs(selectedIslands()) do t[#t + 1] = tostring(i) end
-	return summary(t, "none")
+	return summary(t, "any")
 end
 
 local function tell(text)
@@ -396,36 +377,36 @@ local function tell(text)
 end
 
 Window:BuildHome(features, {
-	{ Title = "Mutations", Get = function() return summary(selectedMutations(), "none") end },
-	{ Title = "Islands",   Get = islandText },
+	{ Title = "Rarity",  Get = function() return summary(selectedMutations(), "any") end },
+	{ Title = "Islands", Get = islandText },
 }, { Tier = "Free" })
 
--- ===== Mutations & Islands tab (Auto Buy lives here) =====
-local pick = Window:Tab({
-	Name = "Pick", Icon = "target", PageTitle = "Mutations & Islands",
-	Desc = "Pick an entry to toggle it on/off. All / None are shortcuts.",
+-- ===== Auto Buy tab: dropdowns + toggle together =====
+local buy = Window:Tab({
+	Name = "Auto Buy", Icon = "shopping-cart", PageTitle = "Auto Buy",
+	Desc = "Pick rarity and island, then turn Auto Buy on. Nothing picked = buy any.",
 })
 
-pick:Section("Mutation")
+buy:Section("Auto Buy")
+
 local mutOptions = { "All", "None" }
 for _, m in ipairs(MutationOrder) do mutOptions[#mutOptions + 1] = m end
-pick:Dropdown({
-	Name = "Mutation", Desc = "Toggle which mutations to keep / buy",
-	Options = mutOptions, Default = "All",
+buy:Dropdown({
+	Name = "Rarity", Desc = "Pick an entry to toggle it (All / None are shortcuts)",
+	Options = mutOptions, Default = "None",
 	Callback = function(v)
 		if v == "All" then SetAllMutations(true)
 		elseif v == "None" then SetAllMutations(false)
 		else SetMutation(v, not Config.Mutations[v]) end
-		tell("Mutations: " .. summary(selectedMutations(), "none"))
+		tell("Rarity: " .. summary(selectedMutations(), "any"))
 	end,
 })
 
-pick:Section("Islands")
 local islOptions = { "All", "None" }
 for i = 1, Config.MaxIsland do islOptions[#islOptions + 1] = tostring(i) end
-pick:Dropdown({
-	Name = "Islands", Desc = "Toggle which islands to buy from",
-	Options = islOptions, Default = "All",
+buy:Dropdown({
+	Name = "Island", Desc = "Pick an entry to toggle it (All / None are shortcuts)",
+	Options = islOptions, Default = "None",
 	Callback = function(v)
 		if v == "All" then SetAllIslands(true)
 		elseif v == "None" then SetAllIslands(false)
@@ -434,29 +415,24 @@ pick:Dropdown({
 	end,
 })
 
-pick:Section("Buy")
-pick:Toggle({
-	Name = "Auto Buy", Desc = "Buys the picked islands, keeps the picked mutations",
-	Default = false,
-	Callback = function(v)
-		Config.AutoBuy = v
-		if v then pushStopOn() end
-	end,
+buy:Toggle({
+	Name = "Auto Buy", Desc = "Buys the chest on offer when it matches your rarity and island",
+	Default = false, Callback = function(v) Config.AutoBuy = v end,
 })
 
 -- ===== Auto tab =====
 local auto = Window:Tab({
 	Name = "Auto", Icon = "zap", PageTitle = "Automation",
-	Desc = "Place, open, collect, compass and pumpkins.",
+	Desc = "Collect, place, open, compass and pumpkins.",
 })
 
-auto:Section("Chests")
-auto:Toggle({ Name = "Auto Place", Desc = "Places picked island/mutation chests",
-	Default = false, Callback = function(v) Config.AutoPlace = v end })
-auto:Toggle({ Name = "Auto Open", Desc = "Opens your placed chests",
-	Default = false, Callback = function(v) Config.AutoOpen = v end })
-auto:Toggle({ Name = "Auto Collect", Desc = "Teleports to your collect pad, collects, comes back",
+auto:Section("Plots")
+auto:Toggle({ Name = "Auto Collect", Desc = "Collects every plot you own (no teleport)",
 	Default = false, Callback = function(v) Config.AutoCollect = v end })
+auto:Toggle({ Name = "Auto Place", Desc = "Places your picked chests on slots 1-34, clearing units first",
+	Default = false, Callback = function(v) Config.AutoPlace = v end })
+auto:Toggle({ Name = "Auto Open", Desc = "Opens every chest whose timer has ended, all at once",
+	Default = false, Callback = function(v) Config.AutoOpen = v end })
 
 auto:Section("Events")
 auto:Toggle({ Name = "Auto Compass", Desc = "Teleports to the Lucky Compass, then returns you",
@@ -469,5 +445,5 @@ Window:OnDestroy(Unload)
 Window:PlayIntro()
 
 genv.FAP = {
-	Config = Config, SetMutation = SetMutation, SetIsland = SetIsland, Unload = Unload,
+	Config = Config, State = S, SetMutation = SetMutation, SetIsland = SetIsland, Unload = Unload,
 }
