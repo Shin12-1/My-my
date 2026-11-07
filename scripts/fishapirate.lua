@@ -6,14 +6,14 @@ if game.PlaceId ~= 77762780479259 and game.GameId ~= 10770113648 then return end
 local genv = (getgenv and getgenv()) or _G
 if genv.FAP_UNLOAD then pcall(genv.FAP_UNLOAD) end
 
-local Players      = game:GetService("Players")
-local RS           = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-local lp           = Players.LocalPlayer
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local lp      = Players.LocalPlayer
 
-local Remotes = RS:WaitForChild("Remotes")
-local Action  = Remotes:WaitForChild("Action")
-local Notify  = Remotes:WaitForChild("Notify")
+local Remotes   = RS:WaitForChild("Remotes")
+local Action    = Remotes:WaitForChild("Action")
+local Notify    = Remotes:WaitForChild("Notify")
+local Halloween = Remotes:WaitForChild("Halloween", 5)
 
 ----------------------------------------------------------------
 -- CONFIG
@@ -27,15 +27,15 @@ local Config = {
 	Islands = {},
 	MaxIsland = 22,
 	SlotCount = 30,
+	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
 
 	AutoBuy     = false,
 	AutoCollect = false,
 	AutoPlace   = false,
 	AutoOpen    = false,
 	AutoCompass = false,
+	AutoPumpkin = false,
 
-	CompassMode  = "Teleport",
-	TweenSpeed   = 150,
 	BuyDelay     = 0.35,
 	CollectDelay = 5,
 	PlaceDelay   = 1,
@@ -130,6 +130,39 @@ local function loop(flag, delay, fn)
 	end)
 end
 
+-- touch a part / model with the character
+local function touch(hrp, target)
+	local parts = target:IsA("Model") and target:GetDescendants() or { target }
+	for _, p in ipairs(parts) do
+		if p:IsA("BasePart") and firetouchinterest then
+			pcall(firetouchinterest, hrp, p, 0)
+			pcall(firetouchinterest, hrp, p, 1)
+		elseif p:IsA("ProximityPrompt") and fireproximityprompt then
+			pcall(fireproximityprompt, p)
+		end
+	end
+end
+
+-- one teleport at a time: go, do the job, return to where you were
+local tpBusy = false
+local function runTp(fn)
+	while tpBusy and alive do task.wait(0.1) end
+	if not alive then return end
+	local char = lp.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	tpBusy = true
+	local origin = hrp.CFrame
+	pcall(fn, hrp)
+	hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+	if hrp then hrp.CFrame = origin end
+	tpBusy = false
+end
+
+local function tpTo(hrp, pos)
+	hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+end
+
 ----------------------------------------------------------------
 -- AUTO BUY
 ----------------------------------------------------------------
@@ -153,10 +186,40 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------
--- AUTO COLLECT
+-- AUTO COLLECT (teleports to Plots.<yourplot>.CollectPads.PadAll.Top)
 ----------------------------------------------------------------
+local function ownPlot()
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return end
+	for _, p in ipairs(plots:GetChildren()) do
+		for _, v in pairs(p:GetAttributes()) do
+			if v == lp.Name or v == lp.UserId or v == lp.DisplayName then return p end
+		end
+	end
+	return plots:FindFirstChild(Config.PlotName)
+end
+
+local function collectTop()
+	local plot = ownPlot()
+	local pads = plot and plot:FindFirstChild("CollectPads")
+	local pad  = pads and pads:FindFirstChild("PadAll")
+	return pad and pad:FindFirstChild("Top")
+end
+
 loop("AutoCollect", "CollectDelay", function()
-	act("Collect", "all")
+	local top = collectTop()
+	if not top then
+		act("Collect", "all")
+		return
+	end
+	runTp(function(hrp)
+		tpTo(hrp, top.Position)
+		task.wait(0.15)
+		touch(hrp, top)
+		task.wait(0.15)
+		act("Collect", "all")
+		task.wait(0.1)
+	end)
 end)
 
 ----------------------------------------------------------------
@@ -191,7 +254,7 @@ loop("AutoPlace", "PlaceDelay", function()
 end)
 
 ----------------------------------------------------------------
--- AUTO COMPASS
+-- AUTO COMPASS (teleport)
 ----------------------------------------------------------------
 local compassToken = 0
 
@@ -211,39 +274,10 @@ local function findCompass()
 	end
 end
 
-local function goTo(hrp, pos)
-	local cf = CFrame.new(pos + Vector3.new(0, 3, 0))
-	if Config.CompassMode == "Tween" then
-		local t = (hrp.Position - cf.Position).Magnitude / math.max(Config.TweenSpeed, 10)
-		local tw = TweenService:Create(hrp, TweenInfo.new(t, Enum.EasingStyle.Linear), { CFrame = cf })
-		tw:Play()
-		tw.Completed:Wait()
-	else
-		hrp.CFrame = cf
-	end
-end
-
-local function touch(hrp, target)
-	local parts = target:IsA("Model") and target:GetDescendants() or { target }
-	for _, p in ipairs(parts) do
-		if p:IsA("BasePart") and firetouchinterest then
-			pcall(firetouchinterest, hrp, p, 0)
-			pcall(firetouchinterest, hrp, p, 1)
-		elseif p:IsA("ProximityPrompt") and fireproximityprompt then
-			pcall(fireproximityprompt, p)
-		end
-	end
-end
-
 local function grabCompass()
 	compassToken += 1
 	local token = compassToken
 	local deadline = os.clock() + 60
-
-	local char = lp.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
-	local origin = hrp.CFrame
 
 	local target
 	while alive and Config.AutoCompass and token == compassToken and os.clock() < deadline do
@@ -253,18 +287,17 @@ local function grabCompass()
 	end
 	if not target or token ~= compassToken then return end
 
-	local stayUntil = os.clock() + 4
-	while alive and Config.AutoCompass and token == compassToken
-		and target.Parent and os.clock() < stayUntil do
-		hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-		if not hrp then return end
-		pcall(goTo, hrp, posOf(target))
-		touch(hrp, target)
-		task.wait(0.25)
-	end
-
-	hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-	if hrp then hrp.CFrame = origin end
+	runTp(function(hrp)
+		local stayUntil = os.clock() + 4
+		while alive and Config.AutoCompass and token == compassToken
+			and target.Parent and os.clock() < stayUntil do
+			hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+			if not hrp then return end
+			tpTo(hrp, posOf(target))
+			touch(hrp, target)
+			task.wait(0.25)
+		end
+	end)
 end
 
 conns[#conns + 1] = Notify.OnClientEvent:Connect(function(msg, _, kind)
@@ -272,6 +305,51 @@ conns[#conns + 1] = Notify.OnClientEvent:Connect(function(msg, _, kind)
 		task.spawn(grabCompass)
 	elseif kind == "compassGone" or (kind == "compassGrab" and tostring(msg):find(lp.Name, 1, true)) then
 		compassToken += 1
+	end
+end)
+
+----------------------------------------------------------------
+-- AUTO PUMPKIN (Halloween spawn -> teleport -> PumpkinGrab)
+----------------------------------------------------------------
+local pumpkins = {}
+
+if Halloween then
+	conns[#conns + 1] = Halloween.OnClientEvent:Connect(function(kind, data)
+		if type(data) ~= "table" or not data.id then return end
+		if kind == "spawn" and data.at then
+			pumpkins[data.id] = data
+		elseif kind == "gone" then
+			pumpkins[data.id] = nil
+		end
+	end)
+end
+
+task.spawn(function()
+	while alive do
+		if Config.AutoPumpkin then
+			local pick
+			local now = workspace:GetServerTimeNow()
+			for id, d in pairs(pumpkins) do
+				if d.expires and d.expires < now then
+					pumpkins[id] = nil
+				elseif not pick or (d.kind == "Big" and pick.kind ~= "Big") then
+					pick = d
+				end
+			end
+			if pick then
+				pumpkins[pick.id] = nil
+				runTp(function(hrp)
+					tpTo(hrp, pick.at)
+					task.wait(0.1)
+					act("PumpkinGrab", pick.id)
+				end)
+				task.wait(0.1)
+			else
+				task.wait(0.3)
+			end
+		else
+			task.wait(0.5)
+		end
 	end
 end)
 
@@ -307,20 +385,22 @@ local function summary(list, empty)
 	return table.concat(list, ", ")
 end
 
+local function islandText()
+	local t = {}
+	for _, i in ipairs(selectedIslands()) do t[#t + 1] = tostring(i) end
+	return summary(t, "none")
+end
+
 local function tell(text)
 	if Window.Notify then pcall(function() Window:Notify(text) end) end
 end
 
 Window:BuildHome(features, {
 	{ Title = "Mutations", Get = function() return summary(selectedMutations(), "none") end },
-	{ Title = "Islands",   Get = function()
-		local t = {}
-		for _, i in ipairs(selectedIslands()) do t[#t + 1] = tostring(i) end
-		return summary(t, "none")
-	end },
+	{ Title = "Islands",   Get = islandText },
 }, { Tier = "Free" })
 
--- ===== Pick tab =====
+-- ===== Mutations & Islands tab (Auto Buy lives here) =====
 local pick = Window:Tab({
 	Name = "Pick", Icon = "target", PageTitle = "Mutations & Islands",
 	Desc = "Pick an entry to toggle it on/off. All / None are shortcuts.",
@@ -350,36 +430,39 @@ pick:Dropdown({
 		if v == "All" then SetAllIslands(true)
 		elseif v == "None" then SetAllIslands(false)
 		else SetIsland(v, not Config.Islands[tonumber(v)]) end
-		local t = {}
-		for _, i in ipairs(selectedIslands()) do t[#t + 1] = tostring(i) end
-		tell("Islands: " .. summary(t, "none"))
+		tell("Islands: " .. islandText())
+	end,
+})
+
+pick:Section("Buy")
+pick:Toggle({
+	Name = "Auto Buy", Desc = "Buys the picked islands, keeps the picked mutations",
+	Default = false,
+	Callback = function(v)
+		Config.AutoBuy = v
+		if v then pushStopOn() end
 	end,
 })
 
 -- ===== Auto tab =====
 local auto = Window:Tab({
 	Name = "Auto", Icon = "zap", PageTitle = "Automation",
-	Desc = "Auto buy, collect, place, open and compass.",
+	Desc = "Place, open, collect, compass and pumpkins.",
 })
 
 auto:Section("Chests")
-auto:Toggle({ Name = "Auto Buy", Desc = "Buys the picked islands, keeps the picked mutations",
-	Default = false, Callback = function(v) Config.AutoBuy = v; if v then pushStopOn() end end })
 auto:Toggle({ Name = "Auto Place", Desc = "Places picked island/mutation chests",
 	Default = false, Callback = function(v) Config.AutoPlace = v end })
 auto:Toggle({ Name = "Auto Open", Desc = "Opens your placed chests",
 	Default = false, Callback = function(v) Config.AutoOpen = v end })
-auto:Toggle({ Name = "Auto Collect", Desc = "Collect all",
+auto:Toggle({ Name = "Auto Collect", Desc = "Teleports to your collect pad, collects, comes back",
 	Default = false, Callback = function(v) Config.AutoCollect = v end })
 
-auto:Section("Lucky Compass")
-auto:Toggle({ Name = "Auto Compass", Desc = "Goes to the compass when it appears, then returns you",
+auto:Section("Events")
+auto:Toggle({ Name = "Auto Compass", Desc = "Teleports to the Lucky Compass, then returns you",
 	Default = false, Callback = function(v) Config.AutoCompass = v end })
-auto:Dropdown({
-	Name = "Compass Move", Desc = "Teleport or Tween to the compass",
-	Options = { "Teleport", "Tween" }, Default = "Teleport",
-	Callback = function(v) Config.CompassMode = v end,
-})
+auto:Toggle({ Name = "Auto Pumpkin", Desc = "Teleports to each Halloween pumpkin and grabs it",
+	Default = false, Callback = function(v) Config.AutoPumpkin = v end })
 
 misc = Window:BuildMisc()
 Window:OnDestroy(Unload)
