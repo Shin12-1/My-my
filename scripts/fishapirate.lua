@@ -27,12 +27,16 @@ local Config = {
 	},
 	Islands = {},
 	MaxIsland = 22,
-	SlotCount = 34,        -- your unlocked plots (max 40); raise it when you unlock more
+	SlotCount = 34,        -- your unlocked plots (max 40)
+	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
+	TargetLevel = 25,
+	MaxLevel = 25,
 
 	AutoBuy     = false,
 	AutoCollect = false,
 	AutoPlace   = false,
 	AutoOpen    = false,
+	AutoLevel   = false,
 	AutoCompass = false,
 	AutoPumpkin = false,
 
@@ -40,6 +44,7 @@ local Config = {
 	CollectDelay = 5,
 	PlaceDelay   = 1.5,
 	OpenDelay    = 1,
+	LevelDelay   = 2,
 }
 for i = 1, Config.MaxIsland do Config.Islands[i] = false end
 
@@ -144,7 +149,7 @@ local function tpTo(hrp, pos)
 end
 
 ----------------------------------------------------------------
--- GAME STATE (from Remotes.State: chestOffer, slots, hotbar, slotsOwned)
+-- GAME STATE (Remotes.State: chestOffer, slots, storageOrder, hotbar, chests, slotsOwned)
 ----------------------------------------------------------------
 local S = {}
 conns[#conns + 1] = State.OnClientEvent:Connect(function(payload)
@@ -157,7 +162,102 @@ local function slotLimit()
 	local owned = tonumber(S.slotsOwned)
 	local n = Config.SlotCount
 	if owned and owned < n then n = owned end
-	return n
+	return math.min(n, 40)
+end
+
+local function slotEntry(slot)
+	return type(S.slots) == "table" and S.slots[slot] or nil
+end
+
+----------------------------------------------------------------
+-- OWN PLOT + CHEST READY CHECK (never opens a chest early)
+----------------------------------------------------------------
+local plotCache
+
+local function plotCenter(p)
+	if p:IsA("Model") then return p:GetPivot().Position end
+	for _, d in ipairs(p:GetDescendants()) do
+		if d:IsA("BasePart") then return d.Position end
+	end
+end
+
+local function ownPlot()
+	if plotCache and plotCache.Parent then return plotCache end
+	local plots = workspace:FindFirstChild("Plots")
+	if not plots then return end
+
+	for _, p in ipairs(plots:GetChildren()) do
+		for _, v in pairs(p:GetAttributes()) do
+			if v == lp.Name or v == lp.UserId or v == lp.DisplayName then
+				plotCache = p return p
+			end
+		end
+		for _, c in ipairs(p:GetChildren()) do
+			if c.Name:lower():find("owner") then
+				local ok, val = pcall(function() return c.Value end)
+				if ok and (val == lp or val == lp.Name or val == lp.UserId) then
+					plotCache = p return p
+				end
+			end
+		end
+	end
+
+	local fixed = plots:FindFirstChild(Config.PlotName)
+	if fixed then plotCache = fixed return fixed end
+end
+
+local function stripTags(s)
+	return (tostring(s):gsub("<[^>]+>", ""))
+end
+
+local function slotTexts(slot)
+	local plot = ownPlot()
+	local objs = plot and plot:FindFirstChild("Objects")
+	local obj = objs and objs:FindFirstChild("Slot" .. slot .. "Object")
+	if not obj then return end
+	local texts = {}
+	for _, d in ipairs(obj:GetDescendants()) do
+		if d:IsA("TextLabel") or d:IsA("TextButton") then
+			local t = stripTags(d.Text):gsub("^%s+", ""):gsub("%s+$", "")
+			if t ~= "" then texts[#texts + 1] = t end
+		end
+	end
+	return texts
+end
+
+local function readyFromState(entry)
+	local now = workspace:GetServerTimeNow()
+	local found
+	local function scan(tbl)
+		for k, v in pairs(tbl) do
+			if type(v) == "number" and v > 1e9 and type(k) == "string"
+				and k:lower():find("ready|open|end|until|finish|done") then
+				found = (found == nil or found) and (v <= now)
+			elseif type(v) == "table" and k ~= "char" then
+				scan(v)
+			end
+		end
+	end
+	scan(entry)
+	return found -- true / false / nil (unknown)
+end
+
+local function chestReady(slot, entry)
+	-- 1) the label above the chest ("OPEN!" vs "38s")
+	local texts = slotTexts(slot)
+	if texts then
+		local sawTimer = false
+		for _, t in ipairs(texts) do
+			if t:upper():find("OPEN") then return true end
+			if t:match("^%d+%s*[smhd]") or t:match("%d+[smhd]%s*%d*[smhd]?$") then sawTimer = true end
+		end
+		if sawTimer then return false end
+	end
+	-- 2) a ready timestamp inside the state entry
+	local st = readyFromState(entry)
+	if st ~= nil then return st end
+	-- unknown: do NOT open (an early open triggers the Robux prompt)
+	return false
 end
 
 ----------------------------------------------------------------
@@ -180,57 +280,120 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------
--- AUTO COLLECT (remote only, works for whatever plot you have)
+-- AUTO COLLECT (remote only, any plot)
 ----------------------------------------------------------------
 loop("AutoCollect", "CollectDelay", function()
 	act("Collect", "all")
 end)
 
 ----------------------------------------------------------------
--- AUTO OPEN (all slots at once; server only accepts ones whose timer ended)
+-- AUTO OPEN (only chests that are ready, each slot once per cooldown)
 ----------------------------------------------------------------
+local openedAt = {}
+
 loop("AutoOpen", "OpenDelay", function()
+	local now = os.clock()
 	for slot = 1, slotLimit() do
-		local entry = type(S.slots) == "table" and S.slots[slot]
-		if not (entry and entry.kind == "char") then
+		local entry = slotEntry(slot)
+		if entry and entry.kind == "chest"
+			and (not openedAt[slot] or now - openedAt[slot] > 5)
+			and chestReady(slot, entry) then
+			openedAt[slot] = now
 			task.spawn(act, "Open", slot)
 		end
 	end
 end)
 
 ----------------------------------------------------------------
--- AUTO PLACE (uses the matching chests in your hotbar, slots 1..SlotCount)
+-- AUTO PLACE (chests from your storage, matching your picks, slots 1..SlotCount)
 ----------------------------------------------------------------
-local function pickChestKey()
-	if type(S.hotbar) ~= "table" then return end
-	for _, item in ipairs(S.hotbar) do
-		local k = item.k
-		if type(k) == "string" and k:sub(1, 6) == "chest:" and (item.n or 1) > 0 then
-			local island, mut = k:match("^chest:(%d+):(%w+)")
-			if island and mutationOk(mut) and islandOk(island) then
-				return k, item
+local function inventoryChestKeys()
+	local keys, seen = {}, {}
+	local function add(k)
+		if type(k) == "string" and k:sub(1, 6) == "chest:" and not seen[k] then
+			seen[k] = true
+			keys[#keys + 1] = k
+		end
+	end
+	if type(S.hotbar) == "table" then
+		for _, it in ipairs(S.hotbar) do add(it.k) end
+	end
+	if type(S.storageOrder) == "table" then
+		for _, k in ipairs(S.storageOrder) do add(k) end
+	end
+	if type(S.chests) == "table" then
+		for k, v in pairs(S.chests) do
+			if type(k) == "string" then
+				add(k)
+			elseif tonumber(k) and type(v) == "table" then
+				for mut, n in pairs(v) do
+					if type(n) == "number" and n > 0 then add(("chest:%d:%s"):format(k, mut)) end
+				end
 			end
 		end
 	end
+	return keys
 end
 
+local function matchingChestKeys()
+	local out = {}
+	for _, k in ipairs(inventoryChestKeys()) do
+		local island, mut = k:match("^chest:(%d+):(%w+)")
+		if island and mutationOk(mut) and islandOk(island) then out[#out + 1] = k end
+	end
+	return out
+end
+
+local placeFail = {}   -- key -> os.clock of last failure on every slot
+
 loop("AutoPlace", "PlaceDelay", function()
+	local keys = matchingChestKeys()
+	if #keys == 0 then return end
+
 	for slot = 1, slotLimit() do
 		if not (alive and Config.AutoPlace) then return end
-		local key, item = pickChestKey()
-		if not key then return end
+		local entry = slotEntry(slot)
+		if not (entry and entry.kind == "chest") then          -- skip slots that already hold a chest
+			for _, key in ipairs(keys) do
+				local ok, res = act("PlaceChest", key, slot)
+				if not (ok and res == true) and entry and entry.kind == "char" then
+					-- a unit is still there: take it out first, then place
+					act("Collect", slot)
+					task.wait(0.2)
+					ok, res = act("PlaceChest", key, slot)
+				end
+				if ok and res == true then
+					if type(S.slots) == "table" then S.slots[slot] = { kind = "chest" } end
+					break
+				end
+				task.wait(0.03)
+			end
+		end
+	end
+end)
 
-		local ok, res = act("PlaceChest", key, slot)
-		if not (ok and res == true) then
-			-- slot still holds a unit: take it out first, then place
-			act("Collect", slot)
-			task.wait(0.2)
-			ok, res = act("PlaceChest", key, slot)
+----------------------------------------------------------------
+-- AUTO LEVEL UP (every unit on your plot -> TargetLevel, only the missing levels)
+----------------------------------------------------------------
+loop("AutoLevel", "LevelDelay", function()
+	local target = math.clamp(tonumber(Config.TargetLevel) or 25, 1, Config.MaxLevel)
+	for slot = 1, slotLimit() do
+		if not (alive and Config.AutoLevel) then return end
+		local entry = slotEntry(slot)
+		local char = entry and entry.kind == "char" and entry.char
+		if char then
+			local level = tonumber(char.level) or 1
+			while alive and Config.AutoLevel and level < target do
+				local ok, res = act("LevelUp", slot, 1)
+				if ok and res == true then
+					level += 1
+					char.level = level          -- keep local view in sync until State refreshes
+					task.wait(0.02)
+				else
+					return                       -- out of cash / capped: retry next cycle
+				end
+			end
 		end
-		if ok and res == true then
-			item.n = (item.n or 1) - 1   -- local count until State refreshes
-		end
-		task.wait(0.05)
 	end
 end)
 
@@ -335,6 +498,27 @@ task.spawn(function()
 end)
 
 ----------------------------------------------------------------
+-- DIAGNOSTICS: FAP.Dump(slot) prints what the script sees for a slot
+----------------------------------------------------------------
+local function ser(v, d)
+	d = d or 0
+	if type(v) ~= "table" then return tostring(v) end
+	if d > 3 then return "{...}" end
+	local parts = {}
+	for k, x in pairs(v) do parts[#parts + 1] = tostring(k) .. "=" .. ser(x, d + 1) end
+	return "{" .. table.concat(parts, ", ") .. "}"
+end
+
+local function Dump(slot)
+	slot = slot or 1
+	print("[FAP] slot", slot, ser(slotEntry(slot)))
+	print("[FAP] labels", ser(slotTexts(slot)))
+	print("[FAP] own plot", ownPlot() and ownPlot().Name or "not found")
+	print("[FAP] matching chests", ser(matchingChestKeys()))
+	print("[FAP] storage chests", ser(inventoryChestKeys()))
+end
+
+----------------------------------------------------------------
 -- UNLOAD
 ----------------------------------------------------------------
 local function Unload()
@@ -379,9 +563,10 @@ end
 Window:BuildHome(features, {
 	{ Title = "Rarity",  Get = function() return summary(selectedMutations(), "any") end },
 	{ Title = "Islands", Get = islandText },
+	{ Title = "Target Level", Get = function() return tostring(Config.TargetLevel) end },
 }, { Tier = "Free" })
 
--- ===== Auto Buy tab: dropdowns + toggle together =====
+-- ===== Auto Buy tab =====
 local buy = Window:Tab({
 	Name = "Auto Buy", Icon = "shopping-cart", PageTitle = "Auto Buy",
 	Desc = "Pick rarity and island, then turn Auto Buy on. Nothing picked = buy any.",
@@ -423,16 +608,27 @@ buy:Toggle({
 -- ===== Auto tab =====
 local auto = Window:Tab({
 	Name = "Auto", Icon = "zap", PageTitle = "Automation",
-	Desc = "Collect, place, open, compass and pumpkins.",
+	Desc = "Collect, place, open, level up, compass and pumpkins.",
 })
 
 auto:Section("Plots")
 auto:Toggle({ Name = "Auto Collect", Desc = "Collects every plot you own (no teleport)",
 	Default = false, Callback = function(v) Config.AutoCollect = v end })
-auto:Toggle({ Name = "Auto Place", Desc = "Places your picked chests on slots 1-34, clearing units first",
+auto:Toggle({ Name = "Auto Place", Desc = "Places chests from your storage (uses the Auto Buy picks) on slots 1-34",
 	Default = false, Callback = function(v) Config.AutoPlace = v end })
-auto:Toggle({ Name = "Auto Open", Desc = "Opens every chest whose timer has ended, all at once",
+auto:Toggle({ Name = "Auto Open", Desc = "Opens a chest only when its timer is done (never the Robux open)",
 	Default = false, Callback = function(v) Config.AutoOpen = v end })
+
+auto:Section("Units")
+local levelOptions = {}
+for i = 1, Config.MaxLevel do levelOptions[#levelOptions + 1] = tostring(i) end
+auto:Dropdown({
+	Name = "Target Level", Desc = "Every unit on your plot is raised to this level",
+	Options = levelOptions, Default = tostring(Config.TargetLevel),
+	Callback = function(v) Config.TargetLevel = tonumber(v) or 25 end,
+})
+auto:Toggle({ Name = "Auto Level Up", Desc = "Upgrades each unit, only the levels it is missing",
+	Default = false, Callback = function(v) Config.AutoLevel = v end })
 
 auto:Section("Events")
 auto:Toggle({ Name = "Auto Compass", Desc = "Teleports to the Lucky Compass, then returns you",
@@ -445,5 +641,6 @@ Window:OnDestroy(Unload)
 Window:PlayIntro()
 
 genv.FAP = {
-	Config = Config, State = S, SetMutation = SetMutation, SetIsland = SetIsland, Unload = Unload,
+	Config = Config, State = S, Dump = Dump,
+	SetMutation = SetMutation, SetIsland = SetIsland, Unload = Unload,
 }
