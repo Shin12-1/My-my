@@ -906,6 +906,17 @@ local function toLua(value)
         return string.format("%q", value)
     elseif kind == "EnumItem" then
         return tostring(value)
+    elseif kind == "table" then
+        local parts = {}
+        for _, item in ipairs(value) do
+            local itemKind = typeof(item)
+            if itemKind == "string" then
+                table.insert(parts, string.format("%q", item))
+            elseif itemKind == "number" or itemKind == "boolean" then
+                table.insert(parts, tostring(item))
+            end
+        end
+        return "{ " .. table.concat(parts, ", ") .. " }"
     end
     return nil
 end
@@ -2046,6 +2057,9 @@ function Tab:Input(opts)
 end
 
 -- Dropdown: compact value chip with a floating options list.
+-- Multi = true turns it into a multi-select: the list stays open, every row has a checkbox,
+-- Value / Get() is an array of the picked options and Callback receives that array.
+-- Extra multi options: Default = { "a", "b" }, EmptyText ("None"), AllText ("All"), Actions = false (hide Select all / Clear).
 function Tab:Dropdown(opts)
     local frame, frameStroke, titleLabel, descLabel
     opts, frame, frameStroke, titleLabel, descLabel = beginElement(self, opts, "TextButton", 170, "Dropdown")
@@ -2053,8 +2067,50 @@ function Tab:Dropdown(opts)
     local metrics = metricsOf(self)
     local compact = metrics.Compact
     local options = opts.Options or {}
-    local current = opts.Default or options[1]
-    local emptyText = opts.EmptyText or ""
+    local multi = opts.Multi == true
+    local emptyText = opts.EmptyText or (multi and "None" or "")
+    local current = nil
+    local picked = {}
+
+    if multi then
+        local default = opts.Default
+        if type(default) == "table" then
+            for _, value in ipairs(default) do
+                picked[value] = true
+            end
+        elseif default ~= nil then
+            picked[default] = true
+        end
+    else
+        current = opts.Default or options[1]
+    end
+
+    local function pickedList()
+        local list = {}
+        for _, option in ipairs(options) do
+            if picked[option] then
+                table.insert(list, option)
+            end
+        end
+        return list
+    end
+
+    local function valueText()
+        if not multi then
+            return (current == nil or current == "") and emptyText or tostring(current)
+        end
+        local list = pickedList()
+        if #list == 0 then
+            return emptyText
+        end
+        if #list == #options and #options > 1 then
+            return opts.AllText or "All"
+        end
+        if #list == 1 then
+            return tostring(list[1])
+        end
+        return #list .. " selected"
+    end
 
     local chip = create("Frame", {
         AnchorPoint = Vector2.new(1, 0.5),
@@ -2069,7 +2125,7 @@ function Tab:Dropdown(opts)
     local valueLabel = label({
         Position = UDim2.fromOffset(10, 0),
         Size = UDim2.new(1, -32, 1, 0),
-        Text = tostring(current or emptyText),
+        Text = valueText(),
         TextSize = compact and 13 or 14,
         FontFace = Fonts.Regular,
         Parent = chip,
@@ -2095,7 +2151,7 @@ function Tab:Dropdown(opts)
     frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitChip)
     task.defer(fitChip)
 
-    local self_: any = { Value = current, Open = false }
+    local self_: any = { Value = multi and pickedList() or current, Open = false }
     local popupClose: any = nil
 
     local function setValue(value, silent)
@@ -2106,7 +2162,32 @@ function Tab:Dropdown(opts)
         end
     end
 
+    local function refreshMulti()
+        self_.Value = pickedList()
+        valueLabel.Text = valueText()
+    end
+
+    local function setMulti(value, silent)
+        picked = {}
+        if type(value) == "table" then
+            for _, item in ipairs(value) do
+                picked[item] = true
+            end
+        elseif value ~= nil then
+            picked[value] = true
+        end
+        refreshMulti()
+        if not silent then
+            safeCall(opts.Callback, self_.Value)
+        end
+    end
+
     function self_:Set(value, silent)
+        if multi then
+            setMulti(value, silent)
+            flashStroke(frameStroke)
+            return
+        end
         if value == self_.Value then
             return
         end
@@ -2114,7 +2195,16 @@ function Tab:Dropdown(opts)
         flashStroke(frameStroke)
     end
     function self_:Get()
+        if multi then
+            return pickedList()
+        end
         return self_.Value
+    end
+    function self_:IsSelected(option)
+        if multi then
+            return picked[option] == true
+        end
+        return self_.Value == option
     end
     function self_:SetOpen(state)
         if not state and popupClose then
@@ -2140,9 +2230,11 @@ function Tab:Dropdown(opts)
         })
 
         local optionH = metrics.Option
-        local rows = math.min(#options, 7)
+        local actionRows = (multi and opts.Actions ~= false and #options > 0) and 2 or 0
+        local rowCount = #options + actionRows
+        local rows = math.min(rowCount, 7)
         -- Keep an empty Saved Configs list blank while allowing it to open.
-        local height = (#options > 0)
+        local height = (rowCount > 0)
             and (rows * optionH + math.max(rows - 1, 0) * 2 + 12)
             or (optionH + 12)
         local abs = (chip.AbsolutePosition - body.AbsolutePosition) / scale
@@ -2190,62 +2282,183 @@ function Tab:Dropdown(opts)
             Parent = list,
         })
 
-        for index, option in ipairs(options) do
-            local selected = option == self_.Value
-            local row = create("TextButton", {
-                Size = UDim2.new(1, 0, 0, optionH),
-                BackgroundColor3 = Theme.Surface3,
-                BackgroundTransparency = selected and 0.58 or 1,
-                BorderSizePixel = 0,
-                Text = "",
-                AutoButtonColor = false,
-                LayoutOrder = index,
-                ZIndex = 63,
-                Parent = list,
-            })
-            corner(row, UDim.new(0, 6))
-            label({
-                Position = UDim2.fromOffset(10, 0),
-                Size = UDim2.new(1, -30, 1, 0),
-                Text = tostring(option),
-                TextSize = 13,
-                TextColor3 = selected and Theme.Accent or Theme.Text,
-                ZIndex = 64,
-                Parent = row,
-            })
-            if selected then
-                local dot = create("Frame", {
+        if multi then
+            -- Multi-select: rows toggle in place and the popup stays open.
+            local refreshers = {}
+            local function refreshAll()
+                for _, fn in ipairs(refreshers) do
+                    fn()
+                end
+            end
+            local order = 0
+
+            local function addAction(text, run)
+                order += 1
+                local row = create("TextButton", {
+                    Size = UDim2.new(1, 0, 0, optionH),
+                    BackgroundColor3 = Theme.Surface3,
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    Text = "",
+                    AutoButtonColor = false,
+                    LayoutOrder = order,
+                    ZIndex = 63,
+                    Parent = list,
+                })
+                corner(row, UDim.new(0, 6))
+                label({
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -20, 1, 0),
+                    Text = text,
+                    TextSize = 13,
+                    TextColor3 = Theme.Muted,
+                    ZIndex = 64,
+                    Parent = row,
+                })
+                row.MouseEnter:Connect(function()
+                    row.BackgroundTransparency = 0.72
+                end)
+                row.MouseLeave:Connect(function()
+                    row.BackgroundTransparency = 1
+                end)
+                row.MouseButton1Click:Connect(function()
+                    run()
+                    flashStroke(frameStroke)
+                    refreshAll()
+                end)
+            end
+
+            if actionRows > 0 then
+                addAction("Select all", function()
+                    local all = {}
+                    for _, option in ipairs(options) do
+                        table.insert(all, option)
+                    end
+                    setMulti(all)
+                end)
+                addAction("Clear", function()
+                    setMulti({})
+                end)
+            end
+
+            for _, option in ipairs(options) do
+                order += 1
+                local row = create("TextButton", {
+                    Size = UDim2.new(1, 0, 0, optionH),
+                    BackgroundColor3 = Theme.Surface3,
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    Text = "",
+                    AutoButtonColor = false,
+                    LayoutOrder = order,
+                    ZIndex = 63,
+                    Parent = list,
+                })
+                corner(row, UDim.new(0, 6))
+                local text = label({
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -38, 1, 0),
+                    Text = tostring(option),
+                    TextSize = 13,
+                    TextColor3 = Theme.Text,
+                    ZIndex = 64,
+                    Parent = row,
+                })
+                local box = create("Frame", {
                     AnchorPoint = Vector2.new(1, 0.5),
                     Position = UDim2.new(1, -10, 0.5, 0),
-                    Size = UDim2.fromOffset(6, 6),
+                    Size = UDim2.fromOffset(14, 14),
                     BackgroundColor3 = Theme.Accent,
+                    BackgroundTransparency = 1,
                     BorderSizePixel = 0,
                     ZIndex = 64,
                     Parent = row,
                 })
-                corner(dot, UDim.new(1, 0))
-            end
+                corner(box, UDim.new(0, 4))
+                local boxStroke = stroke(box, Theme.Muted)
 
-            -- Use direct property changes instead of hover tweens.
-            row.MouseEnter:Connect(function()
-                if not selected then
-                    row.BackgroundTransparency = 0.72
+                local function refresh()
+                    local on = picked[option] == true
+                    box.BackgroundTransparency = on and 0 or 1
+                    boxStroke.Color = on and Theme.Accent or Theme.Muted
+                    text.TextColor3 = on and Theme.Accent or Theme.Text
+                    row.BackgroundTransparency = on and 0.58 or 1
                 end
-            end)
-            row.MouseLeave:Connect(function()
-                if not selected then
-                    row.BackgroundTransparency = 1
-                end
-            end)
-            row.MouseButton1Click:Connect(function()
-                if popupClose then
-                    popupClose()
-                end
-                if option ~= self_.Value then
-                    setValue(option)
+                table.insert(refreshers, refresh)
+                refresh()
+
+                row.MouseEnter:Connect(function()
+                    if not picked[option] then
+                        row.BackgroundTransparency = 0.72
+                    end
+                end)
+                row.MouseLeave:Connect(refresh)
+                row.MouseButton1Click:Connect(function()
+                    picked[option] = (not picked[option]) or nil
+                    refreshMulti()
+                    safeCall(opts.Callback, self_.Value)
                     flashStroke(frameStroke)
+                    refresh()
+                end)
+            end
+        else
+            for index, option in ipairs(options) do
+                local selected = option == self_.Value
+                local row = create("TextButton", {
+                    Size = UDim2.new(1, 0, 0, optionH),
+                    BackgroundColor3 = Theme.Surface3,
+                    BackgroundTransparency = selected and 0.58 or 1,
+                    BorderSizePixel = 0,
+                    Text = "",
+                    AutoButtonColor = false,
+                    LayoutOrder = index,
+                    ZIndex = 63,
+                    Parent = list,
+                })
+                corner(row, UDim.new(0, 6))
+                label({
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -30, 1, 0),
+                    Text = tostring(option),
+                    TextSize = 13,
+                    TextColor3 = selected and Theme.Accent or Theme.Text,
+                    ZIndex = 64,
+                    Parent = row,
+                })
+                if selected then
+                    local dot = create("Frame", {
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -10, 0.5, 0),
+                        Size = UDim2.fromOffset(6, 6),
+                        BackgroundColor3 = Theme.Accent,
+                        BorderSizePixel = 0,
+                        ZIndex = 64,
+                        Parent = row,
+                    })
+                    corner(dot, UDim.new(1, 0))
                 end
-            end)
+
+                -- Use direct property changes instead of hover tweens.
+                row.MouseEnter:Connect(function()
+                    if not selected then
+                        row.BackgroundTransparency = 0.72
+                    end
+                end)
+                row.MouseLeave:Connect(function()
+                    if not selected then
+                        row.BackgroundTransparency = 1
+                    end
+                end)
+                row.MouseButton1Click:Connect(function()
+                    if popupClose then
+                        popupClose()
+                    end
+                    if option ~= self_.Value then
+                        setValue(option)
+                        flashStroke(frameStroke)
+                    end
+                end)
+            end
         end
 
         local closed = false
