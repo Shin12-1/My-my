@@ -38,8 +38,8 @@ local IslandNames = {
 local Config = {
 	Mutations = {},
 	Islands = {},
-	SlotCount = 34,        -- your unlocked plots (max 40)
-	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
+	SlotCount = 36,        -- your unlocked plots (max 40)
+	PlotName  = "",   -- fallback if your own plot can't be detected
 	TargetLevel = 25,
 	MaxLevel = 50,
 
