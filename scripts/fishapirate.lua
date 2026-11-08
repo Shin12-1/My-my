@@ -49,6 +49,7 @@ local Config = {
 	AutoRewards = false,
 	AutoDaily   = false,
 	AutoCompass = false,
+	AutoObby    = false,
 
 	BuyDelay     = 0.5,
 	CollectDelay = 3,
@@ -57,6 +58,14 @@ local Config = {
 	LevelDelay   = 2,
 	RewardDelay  = 20,
 	DailyDelay   = 60,
+
+	-- Sky Obby: the run must last at least your "best" time or the reward is rejected
+	ObbyDifficulties = { Easy = true, Medium = true, Hard = true },
+	ObbyBest       = { Easy = 23.7, Medium = 57.2, Hard = 69.9 },   -- seconds
+	ObbyMargin     = 1.5,    -- extra seconds on top of your best
+	ObbyFinishWait = 2,      -- seconds on the finish pad so the reward registers
+	ObbyIdleDelay  = 5,      -- wait when nothing is ready
+	ObbyRetry      = 300,    -- if the game's cooldown is unknown, retry a difficulty after this many seconds
 }
 for _, m in ipairs(MutationOrder) do Config.Mutations[m] = false end
 for i = 1, #IslandNames do Config.Islands[i] = false end
@@ -583,6 +592,95 @@ conns[#conns + 1] = Notify.OnClientEvent:Connect(function(msg, _, kind)
 end)
 
 ----------------------------------------------------------------
+-- AUTO OBBY (Sky Obby: Keystone -> ObbyStart -> wait your best -> Finish -> ObbyLeave)
+----------------------------------------------------------------
+local ObbyOrder = { "Easy", "Medium", "Hard" }
+local lastRun = {}
+
+local function findPath(root, ...)
+	local node = root
+	for _, name in ipairs({ ... }) do
+		node = node and node:FindFirstChild(name)
+		if not node then return nil end
+	end
+	return node
+end
+
+-- reward ready? uses the game's own cooldown (State.obby[diff].readyAt) when it is known
+local function obbyReady(diff)
+	local last = lastRun[diff]
+	if last and os.clock() - last < 20 then return false end
+	local entry = type(S.obby) == "table" and S.obby[diff]
+	local readyAt = entry and tonumber(entry.readyAt)
+	if readyAt then
+		return readyAt <= workspace:GetServerTimeNow()
+	end
+	return not last or os.clock() - last > Config.ObbyRetry
+end
+
+local function runObby(diff)
+	local keystone = findPath(workspace, "Map", "PlazaStands", "SkyPortal", "Keystone")
+	local finish   = findPath(workspace, "SkyObby", diff, "Finish")
+	if not keystone or not finish then
+		warn("[FAP] obby: missing Keystone or Finish for " .. tostring(diff))
+		return false
+	end
+
+	lastRun[diff] = os.clock()
+	runTp(function(hrp)
+		-- 1) portal keystone, then start
+		tpTo(hrp, posOf(keystone))
+		task.wait(0.4)
+		act("ObbyStart", diff)
+		local startedAt = os.clock()
+
+		-- 2) wait at least your best time (plus margin) or the reward is rejected
+		local needed = (Config.ObbyBest[diff] or 60) + Config.ObbyMargin
+		while alive and Config.AutoObby and os.clock() - startedAt < needed do
+			task.wait(0.1)
+		end
+
+		-- 3) finish pad
+		if alive and Config.AutoObby then
+			hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") or hrp
+			tpTo(hrp, posOf(finish))
+			task.wait(0.15)
+			touch(hrp, finish)
+			task.wait(Config.ObbyFinishWait)
+		end
+
+		-- 4) always leave before joining another one
+		act("ObbyLeave")
+		task.wait(0.6)
+	end)
+	return true
+end
+
+task.spawn(function()
+	while alive do
+		local ranAny = false
+		if Config.AutoObby then
+			for _, diff in ipairs(ObbyOrder) do
+				if not (alive and Config.AutoObby) then break end
+				if Config.ObbyDifficulties[diff] and obbyReady(diff) then
+					local ok, ran = pcall(runObby, diff)
+					if ok and ran then ranAny = true end
+				end
+			end
+		end
+		if not ranAny then task.wait(Config.ObbyIdleDelay) end
+	end
+end)
+
+local function selectedObby()
+	local t = {}
+	for _, diff in ipairs(ObbyOrder) do
+		if Config.ObbyDifficulties[diff] then t[#t + 1] = diff end
+	end
+	return t
+end
+
+----------------------------------------------------------------
 -- DIAGNOSTICS
 ----------------------------------------------------------------
 local function ser(v, d)
@@ -653,6 +751,7 @@ Window:BuildHome(features, {
 	{ Title = "Rarity",  Get = function() return summary(selectedMutations(), "any") end },
 	{ Title = "Islands", Get = function() return summary(selectedIslandNames(), "any") end },
 	{ Title = "Target Level", Get = function() return tostring(Config.TargetLevel) end },
+	{ Title = "Obby", Get = function() return summary(selectedObby(), "none") end },
 }, { Tier = "Free" })
 
 -- ===== Auto Buy tab (multi-select dropdowns: click as many as you want) =====
@@ -721,11 +820,35 @@ auto:Section("Events")
 auto:Toggle({ Name = "Auto Compass", Desc = "Teleports to the Lucky Compass, then returns you",
 	Default = false, Callback = function(v) Config.AutoCompass = v end })
 
+-- ===== Obby tab =====
+local obbyTab = Window:Tab({
+	Name = "Obby", Icon = "flag", PageTitle = "Sky Obby",
+	Desc = "Runs the obby, waits your best time so the reward is accepted, then leaves.",
+})
+
+obbyTab:Section("Sky Obby")
+obbyTab:Dropdown({
+	Name = "Difficulty", Desc = "Tick the obbies to run (Easy 0:23.7, Medium 0:57.2, Hard 1:09.9)",
+	Options = ObbyOrder, Multi = true, Default = { "Easy", "Medium", "Hard" },
+	EmptyText = "None", AllText = "All",
+	Callback = function(list)
+		if type(list) ~= "table" then return end
+		for _, diff in ipairs(ObbyOrder) do Config.ObbyDifficulties[diff] = false end
+		for _, diff in ipairs(list) do
+			if Config.ObbyDifficulties[diff] ~= nil then Config.ObbyDifficulties[diff] = true end
+		end
+	end,
+})
+obbyTab:Toggle({
+	Name = "Auto Obby", Desc = "Easy, Medium, Hard in order; only when the reward is ready",
+	Default = false, Callback = function(v) Config.AutoObby = v end,
+})
+
 misc = Window:BuildMisc()
 Window:OnDestroy(Unload)
 Window:PlayIntro()
 
 genv.FAP = {
 	Config = Config, State = S, Dump = Dump, DumpBuy = DumpBuy,
-	SetMutations = SetMutations, SetIslandNames = SetIslandNames, Unload = Unload,
+	SetMutations = SetMutations, SetIslandNames = SetIslandNames, RunObby = runObby, Unload = Unload,
 }
