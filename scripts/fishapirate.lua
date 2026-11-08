@@ -27,7 +27,9 @@ local IslandNames = {
 	"Windmill Cove", "Clown Harbor", "Floating Restaurant", "Sawshark Park",
 	"Town of Beginnings", "Oasis Town", "Royal Capital", "Sky Island",
 	"Water City", "Justice Tower", "Ghost Ship", "Bubble Archipelago",
-	"Prison Archipelago", "Summit Forest",
+	"Prison Archipelago", "Summit Forest", "Coral Kingdom", "Frozen Lab", 
+	"17", "18", "19", "20", "21", "22", "23", 
+	"24", "25", "26", "27",
 }
 
 ----------------------------------------------------------------
