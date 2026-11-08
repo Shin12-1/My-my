@@ -19,18 +19,28 @@ local State   = Remotes:WaitForChild("State")
 ----------------------------------------------------------------
 -- DATA
 ----------------------------------------------------------------
-local MutationOrder = { "Normal","Gold","Diamond","Aura","Storm","Thunder",
-	"Abyss","Rainbow","Shadow","Awakened","Conqueror","Celestial" }
+local MutationOrder = {
+	"Normal", "Gold", "Diamond", "Aura", "Storm", "Thunder", "Abyss", "Rainbow",
+	"Shadow", "Awakened", "Halloween", "Conqueror", "Admin", "Sea King", "Celestial",
+}
 
--- island number -> name (the name is also what the chest shows). 15-26 not unlocked yet.
+-- island number -> name (the name is also what the chest shows)
 local IslandNames = {
 	"Windmill Cove", "Clown Harbor", "Floating Restaurant", "Sawshark Park",
 	"Town of Beginnings", "Oasis Town", "Royal Capital", "Sky Island",
 	"Water City", "Justice Tower", "Ghost Ship", "Bubble Archipelago",
-	"Prison Archipelago", "Summit Forest", "Coral Kingdom", "Frozen Lab", 
-	"17", "18", "19", "20", "21", "22", "23", 
-	"24", "25", "26", "27",
+	"Prison Archipelago", "Summit Fortress", "Coral Kingdom", "Frozen Lab",
+	"Toy Kingdom", "String Palace", "Elephant Isle", "Candy Island",
+	"Cake Chateau", "Holy Land", "Ronin Port", "Demon Island",
+	"Rooftop Showdown", "Treasure's End",
 }
+
+-- "Sea King" / "SeaKing" / "sea king" all mean the same mutation
+local function normKey(s)
+	return (tostring(s):lower():gsub("%s+", ""))
+end
+local MutationByKey = {}
+for _, name in ipairs(MutationOrder) do MutationByKey[normKey(name)] = name end
 
 ----------------------------------------------------------------
 -- CONFIG
@@ -38,8 +48,8 @@ local IslandNames = {
 local Config = {
 	Mutations = {},
 	Islands = {},
-	SlotCount = 36,        -- your unlocked plots (max 40)
-	PlotName  = "",   -- fallback if your own plot can't be detected
+	SlotCount = 34,        -- your unlocked plots (max 40)
+	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
 	TargetLevel = 25,
 	MaxLevel = 50,
 
@@ -98,7 +108,8 @@ end
 
 local function mutationOk(m)
 	if not mutationFilter() then return true end
-	return Config.Mutations[m] == true
+	local name = MutationByKey[normKey(m)]
+	return name ~= nil and Config.Mutations[name] == true
 end
 
 local function islandOk(i)
@@ -206,13 +217,25 @@ end
 
 ----------------------------------------------------------------
 -- AUTO BUY (chests in the world: press the Buy / E prompt, get close only if needed)
+-- Takes the best matching chest first: rarest mutation, then highest island.
 ----------------------------------------------------------------
 local buyPrompts = {}
+local infoCache = {}
+local pressedAt, giveUpUntil = {}, {}
+local buyBusy = false
+local Bought = 0
+
+local function normText(s)
+	return (stripTags(s):lower():gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
+end
 
 local function trackPrompt(inst)
 	if inst:IsA("ProximityPrompt") then
 		buyPrompts[inst] = true
-		inst.Destroying:Connect(function() buyPrompts[inst] = nil end)
+		inst.Destroying:Connect(function()
+			buyPrompts[inst] = nil
+			infoCache[inst], pressedAt[inst], giveUpUntil[inst] = nil, nil, nil
+		end)
 	end
 end
 
@@ -226,11 +249,18 @@ task.spawn(function()
 end)
 conns[#conns + 1] = workspace.DescendantAdded:Connect(trackPrompt)
 
+-- every text shown on / around the prompt's chest (cached for 2s), with and without spaces
 local function promptLabels(prompt)
+	local cached = infoCache[prompt]
+	if cached and os.clock() - cached.at < 2 then return cached.labels end
+
 	local set = {}
-	local function add(t)
-		t = stripTags(t):lower():gsub("^%s+", ""):gsub("%s+$", "")
-		if t ~= "" then set[t] = true end
+	local function add(text)
+		local t = normText(text)
+		if t ~= "" then
+			set[t] = true
+			set[(t:gsub(" ", ""))] = true
+		end
 	end
 	add(prompt.ObjectText)
 	local root = prompt:FindFirstAncestorOfClass("Model") or prompt.Parent
@@ -240,6 +270,7 @@ local function promptLabels(prompt)
 			if d:IsA("TextLabel") then add(d.Text) end
 		end
 	end
+	infoCache[prompt] = { at = os.clock(), labels = set }
 	return set
 end
 
@@ -251,26 +282,30 @@ local function promptPos(prompt)
 	if m then return m:GetPivot().Position end
 end
 
--- true when this prompt is a chest Buy prompt matching your picks
-local function wantedChest(prompt)
-	local ok, action = pcall(function() return prompt.ActionText:lower() end)
-	if not ok or action ~= "buy" or not prompt.Enabled then return false end
+-- { mut, rank, island } when this prompt is a chest Buy prompt, otherwise nil
+local function chestInfo(prompt)
+	local ok, action = pcall(function() return prompt.ActionText end)
+	if not ok or normText(action) ~= "buy" or not prompt.Enabled then return nil end
 
 	local labels = promptLabels(prompt)
 
-	local mutName
-	for _, m in ipairs(MutationOrder) do
-		if labels[m:lower()] then mutName = m break end
+	local mutName, rank
+	for i, name in ipairs(MutationOrder) do
+		if labels[normText(name)] then mutName, rank = name, i break end
 	end
-	if not mutName then return false end          -- not a chest
-	if not mutationOk(mutName) then return false end
+	if not mutName then return nil end            -- not a chest
 
+	local island
+	for i, name in ipairs(IslandNames) do
+		if labels[normText(name)] then island = i break end
+	end
+	return { mut = mutName, rank = rank, island = island }
+end
+
+local function wanted(info)
+	if not mutationOk(info.mut) then return false end
 	if islandFilter() then
-		local hit = false
-		for _, name in ipairs(selectedIslandNames()) do
-			if labels[name:lower()] then hit = true break end
-		end
-		if not hit then return false end
+		return info.island ~= nil and Config.Islands[info.island] == true
 	end
 	return true
 end
@@ -280,16 +315,20 @@ local function press(prompt)
 	if fireproximityprompt then pcall(fireproximityprompt, prompt) end
 end
 
-local pressedAt, giveUpUntil = {}, {}
-local buyBusy = false
-
 local function tryBuy(prompt)
 	buyBusy = true
 	pressedAt[prompt] = os.clock()
+
+	local function gone()
+		return not prompt.Parent or not prompt.Enabled
+	end
+
 	press(prompt)                     -- 1) from where you stand
 	task.wait(0.5)
 
-	if alive and prompt.Parent and prompt.Enabled then
+	if gone() then
+		Bought += 1
+	elseif alive then
 		local pos = promptPos(prompt) -- 2) still there: get close, press E, come back
 		if pos then
 			runTp(function(hrp)
@@ -304,7 +343,9 @@ local function tryBuy(prompt)
 				task.wait(0.4)
 			end)
 		end
-		if prompt.Parent and prompt.Enabled then
+		if gone() then
+			Bought += 1
+		else
 			giveUpUntil[prompt] = os.clock() + 30   -- e.g. not enough cash: don't spam teleports
 		end
 	end
@@ -315,15 +356,21 @@ task.spawn(function()
 	while alive do
 		if Config.AutoBuy and not buyBusy then
 			local now = os.clock()
+			local best, bestScore
 			for prompt in pairs(buyPrompts) do
 				if prompt.Parent
 					and (not pressedAt[prompt] or now - pressedAt[prompt] > 3)
-					and (not giveUpUntil[prompt] or now > giveUpUntil[prompt])
-					and wantedChest(prompt) then
-					task.spawn(tryBuy, prompt)
-					break
+					and (not giveUpUntil[prompt] or now > giveUpUntil[prompt]) then
+					local info = chestInfo(prompt)
+					if info and wanted(info) then
+						local score = info.rank * 100 + (info.island or 0)
+						if not bestScore or score > bestScore then
+							best, bestScore = prompt, score
+						end
+					end
 				end
 			end
+			if best then task.spawn(tryBuy, best) end
 		end
 		task.wait(Config.BuyDelay)
 	end
@@ -482,7 +529,7 @@ end
 local function matchingChestKeys()
 	local out = {}
 	for _, k in ipairs(inventoryChestKeys()) do
-		local island, mut = k:match("^chest:(%d+):(%w+)")
+		local island, mut = k:match("^chest:(%d+):([^:]+)")
 		if island and mutationOk(mut) and islandOk(island) then out[#out + 1] = k end
 	end
 	return out
@@ -706,15 +753,18 @@ local function DumpBuy()   -- prints every Buy prompt it can see and what it rea
 	local n = 0
 	for prompt in pairs(buyPrompts) do
 		local ok, action = pcall(function() return prompt.ActionText end)
-		if ok and tostring(action):lower() == "buy" then
+		if ok and normText(action) == "buy" then
 			n += 1
 			local labels = {}
-			for t in pairs(promptLabels(prompt)) do labels[#labels + 1] = t end
-			print("[FAP] buy prompt", prompt:GetFullName(), "| labels:", table.concat(labels, " / "),
-				"| wanted:", tostring(wantedChest(prompt)))
+			for text in pairs(promptLabels(prompt)) do labels[#labels + 1] = text end
+			local info = chestInfo(prompt)
+			print("[FAP] buy prompt", prompt:GetFullName(),
+				"| labels:", table.concat(labels, " / "),
+				"| chest:", info and (info.mut .. " / " .. (IslandNames[info.island or 0] or "?")) or "no",
+				"| wanted:", tostring(info ~= nil and wanted(info)))
 		end
 	end
-	print("[FAP] buy prompts found:", n)
+	print("[FAP] buy prompts found:", n, "| bought so far:", Bought)
 end
 
 ----------------------------------------------------------------
@@ -754,6 +804,7 @@ Window:BuildHome(features, {
 	{ Title = "Islands", Get = function() return summary(selectedIslandNames(), "any") end },
 	{ Title = "Target Level", Get = function() return tostring(Config.TargetLevel) end },
 	{ Title = "Obby", Get = function() return summary(selectedObby(), "none") end },
+	{ Title = "Bought", Get = function() return tostring(Bought) end },
 }, { Tier = "Free" })
 
 -- ===== Auto Buy tab (multi-select dropdowns: click as many as you want) =====
@@ -783,7 +834,7 @@ buy:Dropdown({
 })
 
 buy:Toggle({
-	Name = "Auto Buy", Desc = "Buys matching chests (presses E; gets close only if needed)",
+	Name = "Auto Buy", Desc = "Buys matching chests, best rarity first (presses E; gets close only if needed)",
 	Default = false, Callback = function(v) Config.AutoBuy = v end,
 })
 
