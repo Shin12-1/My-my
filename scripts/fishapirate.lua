@@ -1,5 +1,5 @@
 -- Fish A Pirate | PlaceId 77762780479259 | GameId 10770113648
--- scripts/fishapirate.lua  (UI = igkii_lib.lua, loaded with loadstring)
+-- scripts/fishapirate.lua  (UI = igkii_lib.lua with multi-select dropdowns, loaded with loadstring)
 
 if game.PlaceId ~= 77762780479259 and game.GameId ~= 10770113648 then return end
 
@@ -111,19 +111,20 @@ local function selectedIslandNames()
 	return t
 end
 
-local function SetMutation(name, state)
-	if Config.Mutations[name] ~= nil then Config.Mutations[name] = state and true or false end
-end
-local function SetIslandByName(name, state)
-	for i, n in ipairs(IslandNames) do
-		if n == name then Config.Islands[i] = state and true or false return end
+-- the dropdowns hand over the full list of picked entries
+local function SetMutations(list)
+	for _, m in ipairs(MutationOrder) do Config.Mutations[m] = false end
+	for _, m in ipairs(list) do
+		if Config.Mutations[m] ~= nil then Config.Mutations[m] = true end
 	end
 end
-local function SetAllMutations(state)
-	for _, m in ipairs(MutationOrder) do Config.Mutations[m] = state end
-end
-local function SetAllIslands(state)
-	for i = 1, #IslandNames do Config.Islands[i] = state end
+
+local function SetIslandNames(list)
+	for i = 1, #IslandNames do Config.Islands[i] = false end
+	for _, name in ipairs(list) do
+		local i = table.find(IslandNames, name)
+		if i then Config.Islands[i] = true end
+	end
 end
 
 local function loop(flag, delay, fn)
@@ -239,7 +240,7 @@ local function promptPos(prompt)
 	if m then return m:GetPivot().Position end
 end
 
--- returns true when this prompt is a chest Buy prompt matching your picks
+-- true when this prompt is a chest Buy prompt matching your picks
 local function wantedChest(prompt)
 	local ok, action = pcall(function() return prompt.ActionText:lower() end)
 	if not ok or action ~= "buy" or not prompt.Enabled then return false end
@@ -648,47 +649,35 @@ local function summary(list, empty)
 	return table.concat(list, ", ")
 end
 
-local function tell(text)
-	if Window.Notify then pcall(function() Window:Notify(text) end) end
-end
-
 Window:BuildHome(features, {
 	{ Title = "Rarity",  Get = function() return summary(selectedMutations(), "any") end },
 	{ Title = "Islands", Get = function() return summary(selectedIslandNames(), "any") end },
 	{ Title = "Target Level", Get = function() return tostring(Config.TargetLevel) end },
 }, { Tier = "Free" })
 
--- ===== Auto Buy tab =====
+-- ===== Auto Buy tab (multi-select dropdowns: click as many as you want) =====
 local buy = Window:Tab({
 	Name = "Auto Buy", Icon = "shopping-cart", PageTitle = "Auto Buy",
-	Desc = "Click entries to add or remove them. Nothing picked (or All) = buy any chest.",
+	Desc = "Tick the rarities and islands you want. Nothing ticked (or all) = buy any chest.",
 })
 
 buy:Section("Auto Buy")
 
-local mutOptions = { "All", "None" }
-for _, m in ipairs(MutationOrder) do mutOptions[#mutOptions + 1] = m end
 buy:Dropdown({
-	Name = "Rarity", Desc = "Click as many as you want (click again to remove)",
-	Options = mutOptions, Default = "All",
-	Callback = function(v)
-		if v == "All" then SetAllMutations(true)
-		elseif v == "None" then SetAllMutations(false)
-		else SetMutation(v, not Config.Mutations[v]) end
-		tell("Rarity: " .. summary(selectedMutations(), "any"))
+	Name = "Rarity", Desc = "Tick as many as you want",
+	Options = MutationOrder, Multi = true, Default = {},
+	EmptyText = "Any", AllText = "All",
+	Callback = function(list)
+		if type(list) == "table" then SetMutations(list) end
 	end,
 })
 
-local islOptions = { "All", "None" }
-for _, name in ipairs(IslandNames) do islOptions[#islOptions + 1] = name end
 buy:Dropdown({
-	Name = "Island", Desc = "Click as many as you want (click again to remove)",
-	Options = islOptions, Default = "All",
-	Callback = function(v)
-		if v == "All" then SetAllIslands(true)
-		elseif v == "None" then SetAllIslands(false)
-		else SetIslandByName(v, not Config.Islands[table.find(IslandNames, v) or 0]) end
-		tell("Islands: " .. summary(selectedIslandNames(), "any"))
+	Name = "Island", Desc = "Tick as many as you want",
+	Options = IslandNames, Multi = true, Default = {},
+	EmptyText = "Any", AllText = "All",
+	Callback = function(list)
+		if type(list) == "table" then SetIslandNames(list) end
 	end,
 })
 
@@ -738,5 +727,5 @@ Window:PlayIntro()
 
 genv.FAP = {
 	Config = Config, State = S, Dump = Dump, DumpBuy = DumpBuy,
-	SetMutation = SetMutation, SetIslandByName = SetIslandByName, Unload = Unload,
+	SetMutations = SetMutations, SetIslandNames = SetIslandNames, Unload = Unload,
 }
