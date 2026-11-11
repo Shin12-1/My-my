@@ -9,12 +9,14 @@ if genv.FAP_UNLOAD then pcall(genv.FAP_UNLOAD) end
 local Players = game:GetService("Players")
 local RS      = game:GetService("ReplicatedStorage")
 local VIM     = game:GetService("VirtualInputManager")
+local GuiService = game:GetService("GuiService")
 local lp      = Players.LocalPlayer
 
 local Remotes = RS:WaitForChild("Remotes")
 local Action  = Remotes:WaitForChild("Action")
 local Notify  = Remotes:WaitForChild("Notify")
 local State   = Remotes:WaitForChild("State")
+local SeaLordsRemote = Remotes:FindFirstChild("SeaLords")
 
 ----------------------------------------------------------------
 -- DATA
@@ -48,7 +50,7 @@ for _, name in ipairs(MutationOrder) do MutationByKey[normKey(name)] = name end
 local Config = {
 	Mutations = {},
 	Islands = {},
-	SlotCount = 40,        -- your unlocked plots (max 40)
+	SlotCount = 34,        -- your unlocked plots (max 40)
 	PlotName  = "Plot4",   -- fallback if your own plot can't be detected
 	TargetLevel = 25,
 	MaxLevel = 50,
@@ -62,6 +64,12 @@ local Config = {
 	AutoDaily   = false,
 	AutoCompass = false,
 	AutoObby    = false,
+	AutoWheel   = false,
+	AutoQuests  = false,
+	AutoTower   = false,
+	AutoStory   = false,
+	AutoSeaLord = false,
+	FightControls = true,   -- turn AUTO on and set the fight speed in Story / Sea Lord fights
 
 	BuyDelay     = 0.5,
 	CollectDelay = 3,
@@ -78,6 +86,21 @@ local Config = {
 	ObbyFinishWait = 2,      -- seconds on the finish pad so the reward registers
 	ObbyIdleDelay  = 5,      -- wait when nothing is ready
 	ObbyRetry      = 300,    -- if the game's cooldown is unknown, retry a difficulty after this many seconds
+
+	-- Battles
+	WheelCheck   = 30,       -- seconds between wheel checks (the free spin comes every 6 hours)
+	QuestCheck   = 30,
+	TowerMode    = "Sovereign",
+	TowerStall   = 120,      -- restart the endless run if the floor has not moved for this long
+	StoryStage   = "1-6",
+	StoryMaxPaid = 15,       -- only the first 15 battles of the day give rewards
+	StoryTeam    = nil,      -- e.g. { 142, 1374, 1046, 1432 }; nil = the team you used last
+	TowerTeam    = nil,      -- nil = the team the tower used last
+	SeaLord      = "Scarlet",
+	RaidPerHour  = 2,        -- Sea Lord fights allowed per hour
+	FightSpeed   = 2,        -- the "x2" button
+	FightMinSeconds = 6,     -- never end a fight before this
+	FightMaxSeconds = 90,    -- end it anyway after this
 }
 for _, m in ipairs(MutationOrder) do Config.Mutations[m] = false end
 for i = 1, #IslandNames do Config.Islands[i] = false end
@@ -730,6 +753,342 @@ local function selectedObby()
 end
 
 ----------------------------------------------------------------
+-- BATTLES: wheel, daily quests, endless tower, story, Sea Lord raid
+-- (AUTO and x2 are switched on inside every Story / Sea Lord fight)
+----------------------------------------------------------------
+local PlayerGui = lp:WaitForChild("PlayerGui")
+
+local function nowServer()
+	return workspace:GetServerTimeNow()
+end
+
+-- ===== Wheel: free spin every 6 hours (State.wheel.freeAt) =====
+local lastWheel
+loop("AutoWheel", "WheelCheck", function()
+	local wheel = S.wheel
+	local freeAt = type(wheel) == "table" and tonumber(wheel.freeAt)
+	local ready
+	if freeAt then
+		ready = freeAt <= nowServer()
+	else
+		ready = not lastWheel or os.clock() - lastWheel > 6 * 3600
+	end
+	if ready and (not lastWheel or os.clock() - lastWheel > 60) then
+		lastWheel = os.clock()
+		act("WheelSpin", true)
+	end
+end)
+
+-- ===== Daily quests: claim every finished one =====
+loop("AutoQuests", "QuestCheck", function()
+	local list = type(S.quests) == "table" and S.quests.daily
+	if type(list) ~= "table" then return end
+	for i, quest in ipairs(list) do
+		if not (alive and Config.AutoQuests) then return end
+		local done = (tonumber(quest.have) or 0) >= (tonumber(quest.goal) or math.huge)
+		if done and not quest.claimed then
+			local ok, res = act("QuestClaim", "daily", i)
+			if ok and res ~= false then quest.claimed = true end
+			task.wait(0.3)
+		end
+	end
+end)
+
+-- ===== Fight screen helpers (AUTO + speed buttons) =====
+local fightRoot
+
+local function guiVisible(inst)
+	local node = inst
+	while node and node ~= PlayerGui do
+		if node:IsA("GuiObject") and not node.Visible then return false end
+		if node:IsA("ScreenGui") and not node.Enabled then return false end
+		node = node.Parent
+	end
+	return node == PlayerGui
+end
+
+-- first visible text element whose text matches the pattern (searches the fight screen when known)
+local function findText(pattern, root)
+	root = root or fightRoot
+	if root and not root.Parent then root = nil end
+	for _, d in ipairs((root or PlayerGui):GetDescendants()) do
+		if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text ~= "" then
+			if normText(d.Text):match(pattern) and guiVisible(d) then return d end
+		end
+	end
+end
+
+local function clickGui(inst)
+	local btn = inst:IsA("GuiButton") and inst or inst:FindFirstAncestorWhichIsA("GuiButton")
+	if btn then
+		if getconnections then
+			for _, signal in ipairs({ btn.Activated, btn.MouseButton1Click }) do
+				local ok, list = pcall(getconnections, signal)
+				if ok and #list > 0 then
+					for _, c in ipairs(list) do pcall(function() c:Fire() end) end
+					return true
+				end
+			end
+		end
+		if firesignal and pcall(firesignal, btn.MouseButton1Click) then return true end
+	end
+	-- fallback: a real mouse click in the middle of it
+	local target = btn or inst
+	local pos, size = target.AbsolutePosition, target.AbsoluteSize
+	local inset = GuiService:GetGuiInset()
+	local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2 + inset.Y
+	pcall(function()
+		VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+		task.wait(0.05)
+		VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+	end)
+	return true
+end
+
+-- AUTO is lit (saturated yellow) when on, grey-blue when off
+local function guiSaturation(inst)
+	local best = 0
+	local function consider(c)
+		local _, s = c:ToHSV()
+		if s > best then best = s end
+	end
+	local function look(o)
+		pcall(function()
+			if o:IsA("GuiObject") and o.BackgroundTransparency < 1 then consider(o.BackgroundColor3) end
+			if (o:IsA("ImageButton") or o:IsA("ImageLabel")) and o.ImageTransparency < 1 then consider(o.ImageColor3) end
+		end)
+		for _, g in ipairs(o:GetChildren()) do
+			if g:IsA("UIGradient") then
+				local kp = g.Color.Keypoints
+				if kp[1] then consider(kp[1].Value) end
+			end
+		end
+	end
+	local btn = inst:IsA("GuiButton") and inst or inst:FindFirstAncestorWhichIsA("GuiButton") or inst
+	look(btn)
+	for _, d in ipairs(btn:GetDescendants()) do look(d) end
+	return best
+end
+
+local function isAutoOn(inst)
+	return guiSaturation(inst) > 0.5
+end
+
+-- finds the fight screen, then AUTO on + speed set; returns true when a fight screen was found
+local function ensureFightControls()
+	local autoLabel
+	local t0 = os.clock()
+	fightRoot = nil
+	while alive and os.clock() - t0 < 8 do
+		autoLabel = findText("^auto$")
+		if autoLabel then
+			-- only the fight screen counts: it also has the EXIT button
+			local gui = autoLabel:FindFirstAncestorOfClass("ScreenGui")
+			if gui and findText("^exit$", gui) then break end
+			autoLabel = nil
+		end
+		task.wait(0.25)
+	end
+	if not autoLabel then return false end
+	fightRoot = autoLabel:FindFirstAncestorOfClass("ScreenGui")
+	if not Config.FightControls then return true end
+
+	task.wait(0.4)
+	for _ = 1, 2 do
+		autoLabel = findText("^auto$")
+		if not autoLabel or isAutoOn(autoLabel) then break end
+		clickGui(autoLabel)
+		task.wait(0.5)
+	end
+
+	local want = "x" .. tostring(Config.FightSpeed)
+	for _ = 1, 3 do
+		local speed = findText("^x%d+$")
+		if not speed or normText(speed.Text) == want then break end
+		clickGui(speed)
+		task.wait(0.4)
+	end
+	return true
+end
+
+local OverWords = { victory = true, defeat = true, ["you win"] = true, ["you lose"] = true,
+	win = true, lose = true, claim = true, continue = true, rewards = true, ["tap to continue"] = true }
+
+local function resultShown()
+	if not (fightRoot and fightRoot.Parent) then return false end
+	for _, d in ipairs(fightRoot:GetDescendants()) do
+		if (d:IsA("TextLabel") or d:IsA("TextButton")) and OverWords[normText(d.Text)] and guiVisible(d) then
+			return true
+		end
+	end
+	return false
+end
+
+-- waits until the fight is over (result screen / fight screen gone / extra signal) or the maximum time
+local function awaitFightOver(extraDone)
+	local startedAt = os.clock()
+	while alive and os.clock() - startedAt < Config.FightMaxSeconds do
+		task.wait(0.5)
+		if os.clock() - startedAt >= Config.FightMinSeconds then
+			if extraDone and extraDone() then return true end
+			if not (fightRoot and fightRoot.Parent and guiVisible(fightRoot)) then return true end
+			if resultShown() then return true end
+		end
+	end
+	return false
+end
+
+-- ===== Story (default 1-6, only the first 15 battles of the day give rewards) =====
+local function storyPaid()
+	local st = S.story
+	if type(st) ~= "table" then return 0 end
+	if st.day and st.day ~= os.date("!%Y-%m-%d") then return 0 end   -- new day: counter reset
+	return tonumber(st.paid) or 0
+end
+
+local function storyTeam()
+	return Config.StoryTeam or (type(S.story) == "table" and S.story.team) or { 142, 1374, 1046, 1432 }
+end
+
+local storyNoProgress = 0
+
+local function runStory()
+	local paidBefore = storyPaid()
+	act("StoryOpen")
+	task.wait(0.3)
+	act("StoryFightStart", Config.StoryStage, storyTeam())
+	task.wait(0.8)
+	if not ensureFightControls() then return false end
+
+	awaitFightOver()
+	act("StoryFightEnd", {})
+
+	local t0 = os.clock()                          -- wait for the server to credit the battle
+	while alive and os.clock() - t0 < 4 and storyPaid() <= paidBefore do task.wait(0.25) end
+	if storyPaid() > paidBefore then
+		storyNoProgress = 0
+		return true
+	end
+	storyNoProgress += 1
+	return storyNoProgress < 3
+end
+
+-- ===== Sea Lord raid (12 hour event, 2 fights per hour) =====
+local raidTimes = {}
+local raidDoneAt = 0
+
+if SeaLordsRemote then
+	conns[#conns + 1] = SeaLordsRemote.OnClientEvent:Connect(function(kind)
+		if kind == "got" then raidDoneAt = os.clock() end
+	end)
+end
+
+local function raidUsed()
+	local now = nowServer()
+	local used = 0
+	local raid = type(S.sealords) == "table" and S.sealords.raid
+	if type(raid) == "table" and raid.at and now - raid.at < 3600 then
+		used = tonumber(raid.n) or 0
+	end
+	local mine = 0
+	for i = #raidTimes, 1, -1 do
+		if now - raidTimes[i] < 3600 then mine += 1 else table.remove(raidTimes, i) end
+	end
+	return math.max(used, mine)
+end
+
+local function runRaid()
+	table.insert(raidTimes, nowServer())
+	local startedAt = os.clock()
+	act("SeaLordRaid", Config.SeaLord)
+	task.wait(0.8)
+	if not ensureFightControls() then return false end
+
+	awaitFightOver(function() return raidDoneAt > startedAt end)
+	local exitLabel = findText("^exit$")
+	if exitLabel then clickGui(exitLabel) end
+	task.wait(1)
+	return true
+end
+
+-- ===== Endless tower =====
+local towerRunning, towerFloorSeen, towerChangedAt = false, 0, 0
+
+local function towerTeam()
+	return Config.TowerTeam or (type(S.tower) == "table" and S.tower.team) or { 142, 1374, 1046, 991 }
+end
+
+local function towerFloor()
+	local tower = S.tower
+	local endless = type(tower) == "table" and tower.endless
+	return type(endless) == "table" and tonumber(endless[Config.TowerMode]) or 0
+end
+
+local function startTower()
+	act("TowerMute", true)
+	act("TowerAuto", true)
+	act("TowerEndless", Config.TowerMode, towerTeam())
+	towerRunning = true
+	towerFloorSeen = towerFloor()
+	towerChangedAt = os.clock()
+end
+
+local function stopTower()
+	if towerRunning then
+		act("TowerAuto", false)
+		towerRunning = false
+	end
+end
+
+-- ===== One scheduler so fights never overlap: Sea Lord > Story > Tower =====
+local raidPausedUntil, storyPausedUntil = 0, 0
+
+task.spawn(function()
+	while alive do
+		local busy = false
+		pcall(function()
+			local now = os.clock()
+			if Config.AutoSeaLord and now > raidPausedUntil and raidUsed() < Config.RaidPerHour then
+				busy = true
+				stopTower()
+				if not runRaid() then raidPausedUntil = os.clock() + 300 end
+			elseif Config.AutoStory and now > storyPausedUntil and storyPaid() < Config.StoryMaxPaid then
+				busy = true
+				stopTower()
+				if not runStory() then
+					storyNoProgress = 0
+					storyPausedUntil = os.clock() + 180
+				end
+			elseif Config.AutoTower then
+				if not towerRunning then
+					startTower()
+				else
+					local floor = towerFloor()
+					if floor ~= towerFloorSeen then
+						towerFloorSeen, towerChangedAt = floor, os.clock()
+					elseif os.clock() - towerChangedAt > Config.TowerStall then
+						startTower()
+					end
+				end
+			else
+				stopTower()
+			end
+		end)
+		task.wait(busy and 1 or 2)
+	end
+end)
+
+local function DumpFight()   -- run it during a fight: prints what the script sees on the fight screen
+	local autoLabel = findText("^auto$", PlayerGui)
+	local speed = findText("^x%d+$", autoLabel and autoLabel:FindFirstAncestorOfClass("ScreenGui") or PlayerGui)
+	print("[FAP] AUTO:", autoLabel and autoLabel:GetFullName() or "not found",
+		autoLabel and ("| on: " .. tostring(isAutoOn(autoLabel)) .. " | saturation: " .. string.format("%.2f", guiSaturation(autoLabel))) or "")
+	print("[FAP] speed:", speed and (speed:GetFullName() .. " | text: " .. speed.Text) or "not found")
+	print("[FAP] result screen:", tostring(resultShown()), "| story paid:", storyPaid(), "/", Config.StoryMaxPaid,
+		"| raid fights this hour:", raidUsed(), "/", Config.RaidPerHour)
+end
+
+----------------------------------------------------------------
 -- DIAGNOSTICS
 ----------------------------------------------------------------
 local function ser(v, d)
@@ -805,6 +1164,7 @@ Window:BuildHome(features, {
 	{ Title = "Target Level", Get = function() return tostring(Config.TargetLevel) end },
 	{ Title = "Obby", Get = function() return summary(selectedObby(), "none") end },
 	{ Title = "Bought", Get = function() return tostring(Bought) end },
+	{ Title = "Story", Get = function() return storyPaid() .. "/" .. Config.StoryMaxPaid end },
 }, { Tier = "Free" })
 
 -- ===== Auto Buy tab (multi-select dropdowns: click as many as you want) =====
@@ -897,11 +1257,47 @@ obbyTab:Toggle({
 	Default = false, Callback = function(v) Config.AutoObby = v end,
 })
 
+-- ===== Battles tab =====
+local battleTab = Window:Tab({
+	Name = "Battles", Icon = "target", PageTitle = "Battles & Rewards",
+	Desc = "Wheel, quests, tower, story and Sea Lord. AUTO and x2 are switched on in every fight.",
+})
+
+battleTab:Section("Rewards")
+battleTab:Toggle({ Name = "Auto Wheel Spin", Desc = "Spins the free wheel every 6 hours",
+	Default = false, Callback = function(v) Config.AutoWheel = v end })
+battleTab:Toggle({ Name = "Auto Daily Quest", Desc = "Claims every finished daily quest",
+	Default = false, Callback = function(v) Config.AutoQuests = v end })
+
+battleTab:Section("Fights")
+battleTab:Toggle({ Name = "Auto + x2 in fights", Desc = "Turns AUTO on and sets x2 when a Story / Sea Lord fight starts",
+	Default = true, Callback = function(v) Config.FightControls = v end })
+
+local storyStages = { "1-1", "1-2", "1-3", "1-4", "1-5", "1-6" }
+battleTab:Dropdown({
+	Name = "Story Stage", Desc = "Repeated until the 15 rewarded battles of the day are used",
+	Options = storyStages, Default = Config.StoryStage,
+	Callback = function(v) Config.StoryStage = v end,
+})
+battleTab:Toggle({ Name = "Auto Story", Desc = "Fights the stage again and again (max 15 rewarded battles per day)",
+	Default = false, Callback = function(v) Config.AutoStory = v end })
+battleTab:Toggle({ Name = "Auto Sea Lord", Desc = "Scarlet raid, 2 fights per hour while the event lasts",
+	Default = false, Callback = function(v) Config.AutoSeaLord = v end })
+
+battleTab:Section("Endless Tower")
+battleTab:Dropdown({
+	Name = "Tower", Desc = "Which endless tower to climb",
+	Options = { "Sovereign", "War", "Desert", "Puppet", "Rookie" }, Default = Config.TowerMode,
+	Callback = function(v) Config.TowerMode = v; towerRunning = false end,
+})
+battleTab:Toggle({ Name = "Auto Tower Endless", Desc = "Keeps the endless run going (muted, auto on); pauses for Story / Sea Lord",
+	Default = false, Callback = function(v) Config.AutoTower = v end })
+
 misc = Window:BuildMisc()
 Window:OnDestroy(Unload)
 Window:PlayIntro()
 
 genv.FAP = {
-	Config = Config, State = S, Dump = Dump, DumpBuy = DumpBuy,
+	Config = Config, State = S, Dump = Dump, DumpBuy = DumpBuy, DumpFight = DumpFight,
 	SetMutations = SetMutations, SetIslandNames = SetIslandNames, RunObby = runObby, Unload = Unload,
 }
