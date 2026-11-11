@@ -56,6 +56,7 @@ local Config = {
 	MaxLevel = 50,
 
 	AutoBuy     = false,
+	AutoDig     = true,    -- starts automatically; the UI toggle can pause/resume it
 	AutoCollect = false,
 	AutoPlace   = false,
 	AutoOpen    = false,
@@ -72,6 +73,11 @@ local Config = {
 	FightControls = true,   -- turn AUTO on and set the fight speed in Story / Sea Lord fights
 
 	BuyDelay     = 0.5,
+	DigDelay     = 1,      -- seconds between map sweeps
+	RetryDelay   = 4,      -- minimum time before retrying a spot
+	GiveUpDelay  = 30,     -- cooldown after a failed close-range attempt
+	CaptainLast  = true,
+	TeleportBack = true,
 	CollectDelay = 3,
 	PlaceDelay   = 1.5,
 	OpenDelay    = 1,
@@ -195,7 +201,7 @@ end
 
 -- one teleport at a time: go, do the job, return
 local tpBusy = false
-local function runTp(fn)
+local function runTp(fn, returnToOrigin)
 	while tpBusy and alive do task.wait(0.1) end
 	if not alive then return end
 	local char = lp.Character
@@ -205,7 +211,7 @@ local function runTp(fn)
 	local origin = hrp.CFrame
 	pcall(fn, hrp)
 	hrp = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-	if hrp then hrp.CFrame = origin end
+	if hrp and returnToOrigin ~= false then hrp.CFrame = origin end
 	tpBusy = false
 end
 
@@ -237,6 +243,86 @@ end
 local function slotEntry(slot)
 	return type(S.slots) == "table" and S.slots[slot] or nil
 end
+
+----------------------------------------------------------------
+-- AUTO DIG (Remotes.State -> hunt.map.spots)
+-- Tries the HuntDig action from the current position first. If the server
+-- requires proximity, it visits the spot and optionally returns afterward.
+----------------------------------------------------------------
+local needClose = false
+local lastDigTry, digGiveUpUntil = {}, {}
+
+local function undugSpots()
+	local hunt = S.hunt
+	local map = type(hunt) == "table" and hunt.map
+	local spots = type(map) == "table" and map.spots
+	if type(spots) ~= "table" then return {}, nil end
+
+	local list = {}
+	for _, spot in ipairs(spots) do
+		if type(spot) == "table" and not spot.dug and tonumber(spot.id) then
+			list[#list + 1] = spot
+		end
+	end
+	table.sort(list, function(a, b)
+		local ac, bc = a.captain and 1 or 0, b.captain and 1 or 0
+		if Config.CaptainLast and ac ~= bc then return ac < bc end
+		return (tonumber(a.id) or 0) < (tonumber(b.id) or 0)
+	end)
+	return list, map.made
+end
+
+local function digSpot(spot)
+	if not alive or type(spot) ~= "table" or not tonumber(spot.id) then return false end
+
+	-- First try from the player's current location.
+	if not needClose then
+		local ok, res = act("HuntDig", spot.id, nil)
+		if ok and type(res) == "table" then return true end
+	end
+
+	local x, y, z = tonumber(spot.x), tonumber(spot.y), tonumber(spot.z)
+	if not (x and y and z) then return false end
+
+	local success = false
+	runTp(function(hrp)
+		if not (alive and Config.AutoDig) then return end
+		tpTo(hrp, Vector3.new(x, y, z))
+		task.wait(0.4)
+		if not (alive and Config.AutoDig) then return end
+		local ok, res = act("HuntDig", spot.id, nil)
+		success = ok and type(res) == "table"
+		if success then needClose = true end
+	end, Config.TeleportBack)
+	return success
+end
+
+-- One worker handles the hunt map; failed spots are cooled down instead of spammed.
+task.spawn(function()
+	while alive do
+		if Config.AutoDig then
+			local spots, made = undugSpots()
+			for _, spot in ipairs(spots) do
+				if not (alive and Config.AutoDig) then break end
+
+				local key = tostring(made) .. ":" .. tostring(spot.id)
+				local now = os.clock()
+				if (not lastDigTry[key] or now - lastDigTry[key] > Config.RetryDelay)
+					and (not digGiveUpUntil[key] or now > digGiveUpUntil[key]) then
+					lastDigTry[key] = now
+					local ok, success = pcall(digSpot, spot)
+					if ok and success then
+						spot.dug = true -- local optimistic update until State confirms it
+					else
+						digGiveUpUntil[key] = os.clock() + Config.GiveUpDelay
+					end
+					task.wait(0.3)
+				end
+			end
+		end
+		task.wait(Config.DigDelay)
+	end
+end)
 
 ----------------------------------------------------------------
 -- AUTO BUY (chests in the world: press the Buy / E prompt, get close only if needed)
@@ -1230,6 +1316,12 @@ auto:Toggle({ Name = "Auto Daily Reward", Desc = "Claims the daily reward",
 	Default = false, Callback = function(v) Config.AutoDaily = v end })
 
 auto:Section("Events")
+auto:Toggle({ Name = "Auto Dig", Desc = "Digs every undug treasure-map spot; Captain is last by default",
+	Default = Config.AutoDig, Callback = function(v) Config.AutoDig = v end })
+auto:Toggle({ Name = "Captain Last", Desc = "Digs the Captain spot after the normal spots",
+	Default = Config.CaptainLast, Callback = function(v) Config.CaptainLast = v end })
+auto:Toggle({ Name = "Teleport Back After Dig", Desc = "Returns to your previous position after a close-range dig",
+	Default = Config.TeleportBack, Callback = function(v) Config.TeleportBack = v end })
 auto:Toggle({ Name = "Auto Compass", Desc = "Teleports to the Lucky Compass, then returns you",
 	Default = false, Callback = function(v) Config.AutoCompass = v end })
 
@@ -1299,5 +1391,6 @@ Window:PlayIntro()
 
 genv.FAP = {
 	Config = Config, State = S, Dump = Dump, DumpBuy = DumpBuy, DumpFight = DumpFight,
-	SetMutations = SetMutations, SetIslandNames = SetIslandNames, RunObby = runObby, Unload = Unload,
+	SetMutations = SetMutations, SetIslandNames = SetIslandNames, RunObby = runObby,
+	Dig = digSpot, GetUndugSpots = undugSpots, Unload = Unload,
 }
