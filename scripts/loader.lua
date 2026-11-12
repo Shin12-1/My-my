@@ -51,6 +51,7 @@ local Config = {
         { name = "+1 Bow Forge",                path = "scripts/bowforge.lua",     ids = { 85664262792712, 10770433673 } },
         { name = "[NEW] Plant Defense RNG",     path = "scripts/plantdefense.lua", ids = { 88986563263928, 10772529417 } },
         { name = "Fish A Pirate", path = "scripts/fishapirate.lua", ids = { 77762780479259, 10770113648 } },
+        { name = "Roll an Anime Defender", path = "scripts/rollanimedefender.lua", ids = { 125943787415271, 10767655620 } }
         
     },
 }
