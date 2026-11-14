@@ -52,6 +52,7 @@ local Config = {
         { name = "[NEW] Plant Defense RNG",     path = "scripts/plantdefense.lua", ids = { 88986563263928, 10772529417 } },
         { name = "Fish A Pirate", path = "scripts/fishapirate.lua", ids = { 77762780479259, 10770113648 } },
         { name = "Roll an Anime Defender", path = "scripts/rollanimedefender.lua", ids = { 125943787415271, 10767655620 } }
+        { name = "Anime Ashura", path = "scripts/animeashura.lua", ids = { 112575319532871, 10773081884 } },
         
     },
 }
