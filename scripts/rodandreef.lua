@@ -18,15 +18,16 @@ local S = {
 	Fish = false,      -- master: cast + minigame
 	Mini = false,      -- minigame only (you cast by hand)
 	Perfect = true,    -- perfect cast (release at the top of the bar)
-	Thresh = 94,       -- release when the bar is >= this % full
+	Thresh = 97,       -- release when the bar is >= this % full
 	CastHold = 1.6,    -- fallback hold time (s) if the bar can't be read
 	Lead = 60,         -- ms the click is sent ahead of the needle
 	Width = 30,        -- zone width in degrees (hit window)
 	ZoneOff = 0,       -- zone angle offset
 	NeedleOff = 0,     -- needle angle offset
 	Space = false,     -- press with Space instead of mouse click
+	Calib = false,     -- learn the needle offset from your own click
 	Bite = 35,         -- seconds to wait for a bite before re-casting
-	After = 1.2,       -- seconds to wait after a minigame ends
+	After = 0.6,       -- seconds to wait after a minigame ends
 }
 local stats = { casts = 0, rounds = 0, presses = 0 }
 local running = true
@@ -72,6 +73,7 @@ local function nm(o, list)
 	return false
 end
 local NEEDLE_N = { "needle", "pointer", "hand", "arrow", "indicator", "pin" }
+local JUNK_N = { "gear", "saw", "cog", "wheel", "blade", "glow", "spark", "shadow", "bg", "back" }
 local ZONE_N = { "zone", "target", "sweet", "safe", "hit", "arc", "goal", "area", "success", "perfect" }
 
 local function equipRod()
@@ -146,14 +148,16 @@ local function acquire()
 	for _, d in ipairs(cands) do
 		if d.Parent then
 			local delta = math.abs(angdiff(d.Rotation, base[d]))
-			local isN, isZ = nm(d, NEEDLE_N), nm(d, ZONE_N)
+			local isN, isZ, isJ = nm(d, NEEDLE_N), nm(d, ZONE_N), nm(d, JUNK_N)
 			if delta > 1.5 then
-				local sc = delta + (isN and 1000 or 0) - (isZ and 500 or 0)
+				local sc = delta + (isN and 1000 or 0) - (isZ and 500 or 0) - (isJ and 800 or 0)
 				if not nScore or sc > nScore then nBest, nScore = d, sc end
 			else
 				local g = d:FindFirstChildOfClass("UIGradient")
 				local r = math.abs(d.Rotation) + (g and math.abs(g.Rotation) or 0)
-				local sc = (isZ and 1000 or 0) - (isN and 500 or 0) + (r > 0.5 and 100 or 0) + (d:IsA("ImageLabel") and 10 or 0)
+				local col = (d:IsA("ImageLabel") or d:IsA("ImageButton")) and d.ImageColor3 or d.BackgroundColor3
+				local cyan = col.R < 0.3 and col.G > 0.55 and col.B > 0.65
+				local sc = (isZ and 1000 or 0) - (isN and 500 or 0) - (isJ and 600 or 0) + (cyan and 300 or 0) + (r > 0.5 and 100 or 0) + (d:IsA("ImageLabel") and 10 or 0)
 				if sc > 0 and (not zScore or sc > zScore) then zBest, zScore = d, sc end
 			end
 		end
@@ -266,6 +270,40 @@ local function castPerfect()
 end
 
 ----------------------------------------------------------------------
+-- PACKET HOOK  (N = needle attempt result, P = minigame finished)
+----------------------------------------------------------------------
+local finishFlag = false
+local BN = game:GetService("ReplicatedStorage"):WaitForChild("ByteNetReliable", 10)
+
+local function onN()
+	if not running then return end
+	if S.Calib and needle and zone and needle.Parent and zone.Parent then
+		S.NeedleOff = angdiff(zoneAngle() + S.ZoneOff, needle.Rotation)
+		print(("[RodReef] calibrated Needle Offset = %.1f"):format(S.NeedleOff))
+	end
+end
+local function onP()
+	if not running then return end
+	finishFlag = true
+end
+
+if hookmetamethod and getnamecallmethod and BN then
+	local old
+	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+		if running and self == BN and getnamecallmethod() == "FireServer" then
+			local b = ...
+			if typeof(b) == "buffer" and buffer.len(b) > 0 then
+				local id = buffer.readu8(b, 0)
+				if id == 78 then pcall(onN) elseif id == 80 then pcall(onP) end
+			end
+		end
+		return old(self, ...)
+	end))
+else
+	warn("[RodReef] hookmetamethod unavailable - finish detection falls back to the GUI")
+end
+
+----------------------------------------------------------------------
 -- MAIN LOOP
 ----------------------------------------------------------------------
 task.spawn(function()
@@ -277,6 +315,7 @@ task.spawn(function()
 				equipRod()
 				pcall(castPerfect)
 				stats.casts += 1
+				finishFlag = false
 				local t0 = tick()
 				while running and S.Fish and tick() - t0 < S.Bite and not mini() do
 					findPrompt()
@@ -284,9 +323,10 @@ task.spawn(function()
 				end
 				if mini() then
 					repeat task.wait(0.15)
-					until not running or not S.Fish or (not mini() and tick() - lastActive > 1.5)
+					until not running or not S.Fish or finishFlag or (not mini() and tick() - lastActive > 1.5)
 					stats.rounds += 1
 					task.wait(S.After)
+					if finishFlag then lastActive = 0 end
 				elseif running and S.Fish then
 					press()
 					task.wait(1.5)
@@ -382,7 +422,7 @@ end)
 
 Fish:Section("Cast")
 ui("Release %", function()
-	Fish:Slider({ Name = "Release At %", Desc = "Bar fill % where the cast is released", Min = 70, Max = 100, Default = 94,
+	Fish:Slider({ Name = "Release At %", Desc = "Bar fill % where the cast is released", Min = 70, Max = 100, Default = 97,
 		Callback = function(v) S.Thresh = v end })
 end)
 ui("Fallback hold", function()
@@ -410,6 +450,10 @@ end)
 ui("Needle offset", function()
 	Fish:Slider({ Name = "Needle Offset", Desc = "Shifts the needle angle (180 if it uses the tail)", Min = -180, Max = 180, Default = 0,
 		Callback = function(v) S.NeedleOff = v end })
+end)
+ui("Calibrate", function()
+	Fish:Toggle({ Name = "Calibrate Needle", Desc = "ON, then click a Perfect by hand: learns the needle offset", Default = false,
+		Callback = function(v) S.Calib = v end })
 end)
 ui("Space", function()
 	Fish:Toggle({ Name = "Click With Space", Desc = "Use the Space key instead of a mouse click", Default = false,
