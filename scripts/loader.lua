@@ -53,8 +53,8 @@ local Config = {
         { name = "Fish A Pirate", path = "scripts/fishapirate.lua", ids = { 77762780479259, 10770113648 } },
         { name = "Roll an Anime Defender", path = "scripts/rollanimedefender.lua", ids = { 125943787415271, 10767655620 } },
         { name = "Anime Ashura", path = "scripts/animeashura.lua", ids = { 112575319532871, 10773081884 } },
-        { name = "Rod And Reef : Fishing", path = "scripts/rodandreef.lua", ids = { 113515915341334, 9388304346 } }
-        { name = "Blue Lock RNG", path = "scripts/bluelock.lua", ids = { 88691256512156, 10771345944 } }        
+        { name = "Rod And Reef : Fishing", path = "scripts/rodandreef.lua", ids = { 113515915341334, 9388304346 } },
+        { name = "Blue Lock RNG", path = "scripts/bluelock.lua", ids = { 88691256512156, 10771345944 } },        
     },
 }
 
