@@ -38,6 +38,16 @@ local conns = {}
 ----------------------------------------------------------------------
 local function angdiff(a, b) return ((a - b + 540) % 360) - 180 end
 
+-- Helper to get rotation from both the object and its UIGradient
+local function getRot(obj)
+	if not obj then return 0 end
+	local a = obj.Rotation
+	if math.abs(a) > 0.1 then return a end
+	local g = obj:FindFirstChildOfClass("UIGradient")
+	if g then return g.Rotation end
+	return 0
+end
+
 local function shown(o)
 	local p = o
 	while p and p ~= game do
@@ -55,7 +65,8 @@ end
 
 local function mouse(down)
 	local v = viewport()
-	pcall(function() VIM:SendMouseButtonEvent(v.X * 0.62, v.Y * 0.45, 0, down, game, 0) end)
+	-- Clicking center of the screen (0.5, 0.5) where the minigame is located
+	pcall(function() VIM:SendMouseButtonEvent(v.X * 0.5, v.Y * 0.5, 0, down, game, 0) end)
 end
 
 local function key(down)
@@ -124,37 +135,54 @@ local function mini()
 	return promptLbl ~= nil and promptLbl.Parent ~= nil and shown(promptLbl)
 end
 
-local function zoneAngle()
-	local a = zone.Rotation
-	local g = zone:FindFirstChildOfClass("UIGradient")
-	if g and a == 0 then a = g.Rotation end
-	return a
-end
-
 local scanning, armed, armedAt, lastN = false, true, 0, nil
 
+-- IMPROVED ACQUIRE: Samples over time to distinguish continuous rotation (needle) from static (zone)
 local function acquire()
 	local root = promptLbl and promptLbl:FindFirstAncestorOfClass("ScreenGui")
 	if not root then return end
-	local cands, base = {}, {}
+	local cands = {}
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("GuiObject") and d ~= promptLbl and not d:IsA("TextLabel") and shown(d) then
 			cands[#cands + 1] = d
-			base[d] = d.Rotation
 		end
 	end
-	task.wait(0.12)
+	
+	-- Sample rotation over ~0.24 seconds
+	local samples = {}
+	for _, d in ipairs(cands) do
+		samples[d] = { getRot(d) }
+	end
+	for i = 2, 4 do
+		task.wait(0.08)
+		for _, d in ipairs(cands) do
+			if d.Parent then
+				samples[d][i] = getRot(d)
+			end
+		end
+	end
+	
 	local nBest, nScore, zBest, zScore
 	for _, d in ipairs(cands) do
 		if d.Parent then
-			local delta = math.abs(angdiff(d.Rotation, base[d]))
 			local isN, isZ, isJ = nm(d, NEEDLE_N), nm(d, ZONE_N), nm(d, JUNK_N)
-			if delta > 1.5 then
-				local sc = delta + (isN and 1000 or 0) - (isZ and 500 or 0) - (isJ and 800 or 0)
+			local moveCount = 0
+			local totalDelta = 0
+			
+			-- Calculate movement consistency
+			for i = 2, 4 do
+				local delta = math.abs(angdiff(samples[d][i], samples[d][i-1]))
+				if delta > 0.5 then moveCount += 1 end
+				totalDelta = totalDelta + delta
+			end
+			
+			-- The needle rotates continuously (moves in multiple frames)
+			if moveCount >= 2 then
+				local sc = totalDelta + (isN and 1000 or 0) - (isZ and 500 or 0) - (isJ and 800 or 0)
 				if not nScore or sc > nScore then nBest, nScore = d, sc end
 			else
-				local g = d:FindFirstChildOfClass("UIGradient")
-				local r = math.abs(d.Rotation) + (g and math.abs(g.Rotation) or 0)
+				-- The zone is mostly static or jumps only once
+				local r = math.abs(getRot(d))
 				local col = (d:IsA("ImageLabel") or d:IsA("ImageButton")) and d.ImageColor3 or d.BackgroundColor3
 				local cyan = col.R < 0.3 and col.G > 0.55 and col.B > 0.65
 				local sc = (isZ and 1000 or 0) - (isN and 500 or 0) - (isJ and 600 or 0) + (cyan and 300 or 0) + (r > 0.5 and 100 or 0) + (d:IsA("ImageLabel") and 10 or 0)
@@ -162,6 +190,7 @@ local function acquire()
 			end
 		end
 	end
+	
 	needle, zone = nBest, zBest
 	armed, lastN = true, nil
 	if not (needle and zone) then
@@ -184,8 +213,10 @@ table.insert(conns, RunService.Heartbeat:Connect(function(dt)
 		end
 		return
 	end
-	local n = needle.Rotation + S.NeedleOff
-	local z = zoneAngle() + S.ZoneOff
+	
+	-- Use getRot to accurately grab the angles
+	local n = getRot(needle) + S.NeedleOff
+	local z = getRot(zone) + S.ZoneOff
 	local diff = angdiff(n, z)
 	local v = 0
 	if lastN then v = angdiff(n, lastN) / math.max(dt, 1e-3) end
@@ -278,7 +309,7 @@ local BN = game:GetService("ReplicatedStorage"):WaitForChild("ByteNetReliable", 
 local function onN()
 	if not running then return end
 	if S.Calib and needle and zone and needle.Parent and zone.Parent then
-		S.NeedleOff = angdiff(zoneAngle() + S.ZoneOff, needle.Rotation)
+		S.NeedleOff = angdiff(getRot(zone) + S.ZoneOff, getRot(needle))
 		print(("[RodReef] calibrated Needle Offset = %.1f"):format(S.NeedleOff))
 	end
 end
