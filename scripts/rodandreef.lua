@@ -97,12 +97,21 @@ end
 local promptLbl, needle, zone
 local lastScan, lastActive = 0, 0
 
-local function findPrompt()
-	if promptLbl and promptLbl.Parent then return promptLbl end
-	if tick() - lastScan < 0.5 then return nil end
+local function isPromptText(d)
+	if not d:IsA("TextLabel") then return false end
+	local t = d.Text:lower()
+	if not (t:find("reaches the zone", 1, true) or t:find("press when the needle", 1, true)) then return false end
+	if d:FindFirstAncestor("Tutorial") then return false end
+	return true
+end
+
+local function findPrompt(force)
+	if promptLbl and promptLbl.Parent and shown(promptLbl) then return promptLbl end
+	if not force and tick() - lastScan < 0.4 then return nil end
 	lastScan = tick()
 	for _, d in ipairs(PG:GetDescendants()) do
-		if d:IsA("TextLabel") and d.Text:lower():find("needle") then
+		if isPromptText(d) and shown(d) then
+			if promptLbl ~= d then needle, zone, lastN = nil, nil, nil end
 			promptLbl = d
 			return d
 		end
@@ -158,8 +167,11 @@ end
 
 table.insert(conns, RunService.Heartbeat:Connect(function(dt)
 	if not (S.Fish or S.Mini) then return end
-	if not promptLbl or not promptLbl.Parent then return end
-	if not shown(promptLbl) then needle, zone, lastN = nil, nil, nil return end
+	if not (promptLbl and promptLbl.Parent and shown(promptLbl)) then
+		needle, zone, lastN = nil, nil, nil
+		findPrompt()
+		if not (promptLbl and promptLbl.Parent and shown(promptLbl)) then return end
+	end
 	lastActive = tick()
 	if not needle or not needle.Parent or not zone or not zone.Parent then
 		if not scanning then
@@ -290,11 +302,19 @@ end)
 -- DEBUG DUMPS
 ----------------------------------------------------------------------
 local function dumpMini()
-	findPrompt()
 	print("===== ROD&REEF MINIGAME DUMP =====")
-	if not promptLbl then print("prompt label not found (start a minigame first)") return end
+	findPrompt(true)
+	if not (promptLbl and shown(promptLbl)) then
+		print("minigame prompt is not on screen - press this button while the needle minigame is showing")
+		for _, d in ipairs(PG:GetDescendants()) do
+			if d:IsA("TextLabel") and d.Text:lower():find("needle", 1, true) then
+				print("text match:", d:GetFullName(), "shown:", shown(d))
+			end
+		end
+		return
+	end
 	local root = promptLbl:FindFirstAncestorOfClass("ScreenGui")
-	print("prompt:", promptLbl:GetFullName(), "shown:", shown(promptLbl))
+	print("prompt:", promptLbl:GetFullName())
 	for _, d in ipairs(root:GetDescendants()) do
 		if d:IsA("GuiObject") then
 			local g = d:FindFirstChildOfClass("UIGradient")
