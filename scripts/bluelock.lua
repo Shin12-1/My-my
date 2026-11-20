@@ -11,7 +11,12 @@ local player = Players.LocalPlayer
 
 -- ================= UI LIB (separate file, loaded via loader) =================
 local fetch = env.IGKII_FETCH
-local Library = loadstring(fetch("igkii_lib.lua"))()
+assert(type(fetch) == "function", "[bluelock] IGKII_FETCH missing - launch this through loader.lua")
+local libSrc = fetch("igkii_lib.lua")
+assert(type(libSrc) == "string" and #libSrc > 0, "[bluelock] igkii_lib.lua download failed")
+local libFn, libErr = loadstring(libSrc)
+assert(libFn, "[bluelock] igkii_lib.lua compile error: " .. tostring(libErr))
+local Library = libFn()
 
 local misc
 local features = Library.MiscFeatures(function() return misc end)
@@ -82,7 +87,7 @@ table.insert(connections, remote.OnClientEvent:Connect(function(action, a, b)
 		end
 	elseif action == "Got" then
 		done[a] = true
-		stats.Claimed += 1
+		stats.Claimed = stats.Claimed + 1
 		stats.Last = tostring(b or "-")
 	elseif action == "Remove" then
 		drops[a] = nil
